@@ -1,28 +1,38 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {VolrInvoker} from "../../src/invoker/VolrInvoker.sol";
 import {ScopedPolicy} from "../../src/policy/ScopedPolicy.sol";
+import {PolicyRegistry} from "../../src/registry/PolicyRegistry.sol";
 import {Types} from "../../src/libraries/Types.sol";
 import {EIP712} from "../../src/libraries/EIP712.sol";
+
+import {TestHelpers} from "../helpers/TestHelpers.sol";
 
 contract VolrInvokerTest is Test {
     VolrInvoker public invoker;
     ScopedPolicy public policy;
+    PolicyRegistry public registry;
     address public user;
     uint256 public userKey;
+    bytes32 public policyId;
     
     function setUp() public {
         userKey = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef;
         user = vm.addr(userKey);
+        policyId = keccak256("test-policy");
         
         policy = new ScopedPolicy();
-        invoker = new VolrInvoker(address(policy));
+        registry = TestHelpers.deployPolicyRegistry(address(this));
+        registry.setTimelock(address(this));
+        registry.setMultisig(address(this));
+        registry.register(policyId, address(policy), "test-policy");
+        invoker = new VolrInvoker(address(registry));
     }
     
     function test_Deploy() public {
-        assertEq(address(invoker.policy()), address(policy));
+        assertEq(registry.get(policyId), address(policy));
     }
     
     function test_ExecuteBatch_Basic() public {
@@ -36,7 +46,8 @@ contract VolrInvokerTest is Test {
         calls[0] = Types.Call({
             target: address(0x1234),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         Types.SessionAuth memory auth = Types.SessionAuth({
@@ -45,7 +56,9 @@ contract VolrInvokerTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         bytes memory invalidSig = hex"1234";

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {ClientSponsor} from "../../src/sponsor/ClientSponsor.sol";
 import {Types} from "../../src/libraries/Types.sol";
+import {TestHelpers} from "../helpers/TestHelpers.sol";
 
 contract ClientSponsorTest is Test {
     ClientSponsor public sponsor;
@@ -15,7 +16,7 @@ contract ClientSponsorTest is Test {
         owner = address(this);
         client = address(0x1111);
         user = address(0x2222);
-        sponsor = new ClientSponsor();
+        sponsor = TestHelpers.deployClientSponsor(owner);
     }
     
     function test_HandleSponsorship() public {

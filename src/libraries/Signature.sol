@@ -32,14 +32,12 @@ library Signature {
         bytes32 r,
         bytes32 s
     ) internal pure returns (address) {
-        // ECDSA 복구를 위해 v를 27 또는 28로 변환
-        uint8 vAdjusted = v + 27;
+        // EIP-712 hash는 이미 "\x19\x01" + domainSeparator + structHash 형태
+        // v가 27 또는 28이어야 함 (vm.sign은 27 또는 28을 반환)
+        uint8 vAdjusted = v >= 27 ? v : v + 27;
         
-        bytes32 messageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
-        );
-        
-        return ecrecover(messageHash, vAdjusted, r, s);
+        // EIP-712 해시를 직접 사용 (추가 prefix 없음)
+        return ecrecover(hash, vAdjusted, r, s);
     }
 }
 

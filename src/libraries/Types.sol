@@ -6,6 +6,7 @@ library Types {
         address target;
         uint256 value;
         bytes data;
+        uint256 gasLimit;  // 0이면 제한 없음
     }
     
     struct SessionAuth {
@@ -15,6 +16,8 @@ library Types {
         uint256 opNonce;
         uint64 expiry;
         bytes32 scopeId;
+        bytes32 policyId;  // PolicyRegistry에서 조회할 정책 ID
+        uint256 totalGasCap;  // 0이면 제한 없음
     }
 }
 

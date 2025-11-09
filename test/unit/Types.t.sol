@@ -9,7 +9,8 @@ contract TypesTest is Test {
         Types.Call memory call = Types.Call({
             target: address(0x1234),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         assertEq(call.target, address(0x1234));
@@ -24,7 +25,9 @@ contract TypesTest is Test {
             chainId: 1,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         assertEq(auth.callsHash, keccak256("test"));
@@ -40,12 +43,14 @@ contract TypesTest is Test {
         calls[0] = Types.Call({
             target: address(0x1),
             value: 0,
-            data: hex"01"
+            data: hex"01",
+            gasLimit: 0
         });
         calls[1] = Types.Call({
             target: address(0x2),
             value: 1 ether,
-            data: hex"02"
+            data: hex"02",
+            gasLimit: 0
         });
         
         assertEq(calls.length, 2);

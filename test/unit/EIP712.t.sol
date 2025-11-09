@@ -43,7 +43,9 @@ contract EIP712Test is Test {
             chainId: 1,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         bytes32 hash = EIP712.hashTypedDataV4(verifyingContract, auth);
@@ -60,7 +62,9 @@ contract EIP712Test is Test {
             chainId: 1,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         bytes32 hash1 = EIP712.hashTypedDataV4(verifyingContract, auth);

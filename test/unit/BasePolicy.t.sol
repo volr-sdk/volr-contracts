@@ -20,14 +20,17 @@ contract BasePolicyTest is Test {
             chainId: 1,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: address(0x1234),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         // validate 함수가 호출 가능한지 확인

@@ -10,7 +10,8 @@ contract CallValidatorTest is Test {
         Types.Call memory call = Types.Call({
             target: address(0x1234),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         bool isValid = CallValidator.validateCall(call);
@@ -21,7 +22,8 @@ contract CallValidatorTest is Test {
         Types.Call memory call = Types.Call({
             target: address(0x1234),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         // value가 0이면 허용
@@ -32,7 +34,8 @@ contract CallValidatorTest is Test {
         Types.Call memory call = Types.Call({
             target: address(0x1234),
             value: 1 ether,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         // 기본 정책: value가 0이 아니면 거부
@@ -45,7 +48,8 @@ contract CallValidatorTest is Test {
         Types.Call memory call = Types.Call({
             target: address(0),
             value: 0,
-            data: hex"1234"
+            data: hex"1234",
+            gasLimit: 0
         });
         
         // target이 0이면 실패해야 함
@@ -58,12 +62,14 @@ contract CallValidatorTest is Test {
         calls[0] = Types.Call({
             target: address(0x1),
             value: 0,
-            data: hex"01"
+            data: hex"01",
+            gasLimit: 0
         });
         calls[1] = Types.Call({
             target: address(0x2),
             value: 0,
-            data: hex"02"
+            data: hex"02",
+            gasLimit: 0
         });
         
         bool isValid = CallValidator.validateCalls(calls);
@@ -88,7 +94,8 @@ contract CallValidatorTest is Test {
             calls[i] = Types.Call({
                 target: address(uint160(i + 1)),
                 value: 0,
-                data: hex"01"
+                data: hex"01",
+                gasLimit: 0
             });
         }
         

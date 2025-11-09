@@ -3,8 +3,13 @@ pragma solidity ^0.8.24;
 
 import {BasePolicy} from "./BasePolicy.sol";
 import {Types} from "../libraries/Types.sol";
+import {DelegationGuard} from "../libraries/DelegationGuard.sol";
 
 contract ScopedPolicy is BasePolicy {
+    // ERC-7201 Storage Namespacing
+    bytes32 public constant STORAGE_SLOT_POLICIES = keccak256("volr.ScopedPolicy.policies");
+    bytes32 public constant STORAGE_SLOT_NONCES = keccak256("volr.ScopedPolicy.usedNonces");
+    
     struct PolicyConfig {
         uint256 chainId;
         address[] allowedContracts;
@@ -30,6 +35,11 @@ contract ScopedPolicy is BasePolicy {
         Types.SessionAuth calldata auth,
         Types.Call[] calldata calls
     ) external view override returns (bool ok, uint256 code) {
+        // EIP-7702 delegation 체크 (화이트리스트 기반 엔드포인트 보호)
+        if (DelegationGuard.isDelegated(msg.sender)) {
+            return (false, 10); // DELEGATION_NOT_ALLOWED
+        }
+        
         // scopeId를 policyId로 사용
         bytes32 policyId = auth.scopeId;
         PolicyConfig memory config = policies[policyId];
@@ -57,6 +67,19 @@ contract ScopedPolicy is BasePolicy {
         // Nonce 재생 방지
         if (usedNonces[policyId][auth.opNonce]) {
             return (false, 5); // NONCE_REUSED
+        }
+        
+        // TotalGasCap 검증 (각 call의 gasLimit 합계 검증)
+        if (auth.totalGasCap > 0) {
+            uint256 totalGasLimit = 0;
+            for (uint256 i = 0; i < calls.length; i++) {
+                if (calls[i].gasLimit > 0) {
+                    totalGasLimit += calls[i].gasLimit;
+                }
+            }
+            if (totalGasLimit > auth.totalGasCap) {
+                return (false, 9); // TOTAL_GAS_CAP_EXCEEDED
+            }
         }
         
         // Call 검증
@@ -108,5 +131,38 @@ contract ScopedPolicy is BasePolicy {
     function markNonceUsed(bytes32 policyId, uint256 nonce) external {
         usedNonces[policyId][nonce] = true;
     }
+    
+    /**
+     * @notice Hook called after successful execution
+     * @param executor Address that executed the calls
+     * @param auth Session authorization data
+     * @param calls Array of calls that were executed
+     * @param gasUsed Gas used for execution
+     */
+    function onExecuted(
+        address executor,
+        Types.SessionAuth calldata auth,
+        Types.Call[] calldata calls,
+        uint256 gasUsed
+    ) external override {
+        // Mark nonce as used
+        bytes32 policyId = auth.scopeId;
+        usedNonces[policyId][auth.opNonce] = true;
+    }
+    
+    /**
+     * @notice Hook called after failed execution (no-op)
+     * @param executor Address that executed the calls
+     * @param auth Session authorization data
+     * @param calls Array of calls that were executed
+     * @param reason Revert reason
+     */
+    function onFailed(
+        address executor,
+        Types.SessionAuth calldata auth,
+        Types.Call[] calldata calls,
+        bytes calldata reason
+    ) external override {
+        // No-op on failure
+    }
 }
-

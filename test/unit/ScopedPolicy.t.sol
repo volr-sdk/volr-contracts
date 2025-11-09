@@ -23,14 +23,17 @@ contract ScopedPolicyTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: allowedContract,
             value: 0,
-            data: abi.encodePacked(allowedSelector)
+            data: abi.encodePacked(allowedSelector),
+            gasLimit: 0
         });
         
         // 체인ID 검증 테스트
@@ -45,14 +48,17 @@ contract ScopedPolicyTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp - 1), // 만료됨
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: allowedContract,
             value: 0,
-            data: abi.encodePacked(allowedSelector)
+            data: abi.encodePacked(allowedSelector),
+            gasLimit: 0
         });
         
         // 만료된 세션은 거부되어야 함
@@ -67,14 +73,17 @@ contract ScopedPolicyTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: allowedContract,
             value: 0,
-            data: abi.encodePacked(allowedSelector)
+            data: abi.encodePacked(allowedSelector),
+            gasLimit: 0
         });
         
         // 첫 번째 호출
@@ -94,14 +103,17 @@ contract ScopedPolicyTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: address(0x9999), // 화이트리스트에 없는 주소
             value: 0,
-            data: abi.encodePacked(allowedSelector)
+            data: abi.encodePacked(allowedSelector),
+            gasLimit: 0
         });
         
         // 화이트리스트에 없는 컨트랙트는 거부되어야 함
@@ -116,14 +128,17 @@ contract ScopedPolicyTest is Test {
             chainId: block.chainid,
             opNonce: 1,
             expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope")
+            scopeId: keccak256("scope"),
+            policyId: keccak256("policy"),
+            totalGasCap: 0
         });
         
         Types.Call[] memory calls = new Types.Call[](1);
         calls[0] = Types.Call({
             target: allowedContract,
             value: 10 ether, // 한도를 초과하는 값
-            data: abi.encodePacked(allowedSelector)
+            data: abi.encodePacked(allowedSelector),
+            gasLimit: 0
         });
         
         // 한도를 초과하는 value는 거부되어야 함

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {VolrSponsor} from "../../src/sponsor/VolrSponsor.sol";
+import {TestHelpers} from "../helpers/TestHelpers.sol";
 
 contract VolrSponsorTest is Test {
     VolrSponsor public sponsor;
@@ -10,7 +11,7 @@ contract VolrSponsorTest is Test {
     
     function setUp() public {
         client = address(0x1111);
-        sponsor = new VolrSponsor();
+        sponsor = TestHelpers.deployVolrSponsor(address(this));
     }
     
     function test_CompensateClient() public {

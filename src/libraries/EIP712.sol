@@ -8,7 +8,7 @@ library EIP712 {
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     
     bytes32 public constant SESSION_AUTH_TYPEHASH =
-        keccak256("SessionAuth(bytes32 callsHash,bool revertOnFail,uint256 chainId,uint256 opNonce,uint64 expiry,bytes32 scopeId)");
+        keccak256("SessionAuth(bytes32 callsHash,bool revertOnFail,uint256 chainId,uint256 opNonce,uint64 expiry,bytes32 scopeId,bytes32 policyId,uint256 totalGasCap)");
     
     bytes32 public constant DOMAIN_NAME = keccak256("volr");
     bytes32 public constant DOMAIN_VERSION = keccak256("1");
@@ -39,7 +39,9 @@ library EIP712 {
                 auth.chainId,
                 auth.opNonce,
                 auth.expiry,
-                auth.scopeId
+                auth.scopeId,
+                auth.policyId,
+                auth.totalGasCap
             )
         );
         
