@@ -9,4 +9,15 @@ libs = ["lib"]
 bytecode_hash = "none"
 cbor_metadata = false
 
+# Citrea Testnet
+[profile.citrea_testnet]
+rpc_url = "https://rpc.testnet.citrea.xyz"
+chain_id = 5115
+
+# Etherscan 설정 (검증을 하지 않는다면 필요 없음)
+# 검증을 하려면 .env에 CITREA_EXPLORER_API_KEY를 설정하고 아래 주석을 해제하세요
+# [etherscan.citrea_testnet]
+# key = "${CITREA_EXPLORER_API_KEY}"
+# api_url = "https://explorer.testnet.citrea.xyz/api"
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

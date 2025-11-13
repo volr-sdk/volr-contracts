@@ -57,8 +57,8 @@ contract StoragePreservationTest is Test {
         implV1 = new ClientSponsorV1();
         
         // Deploy proxy with V1 implementation
-        bytes memory initData = abi.encodeWithSelector(
-            ClientSponsor.initialize.selector,
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize(address)",
             owner
         );
         proxy = new ERC1967Proxy(address(implV1), initData);

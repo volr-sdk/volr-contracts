@@ -203,19 +203,66 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
         for (uint256 i = 0; i < calls.length; i++) {
             Types.Call memory call = calls[i];
             
+            // Guard: target must be a contract (prevent EOA no-op success)
+            require(call.target.code.length > 0, "Target is not a contract");
+            
             // gasLimit 검증 (0이면 제한 없음)
             uint256 gasBefore = gasleft();
-            (bool success, ) = call.target.call{value: call.value}(call.data);
+            (bool success, bytes memory ret) = call.target.call{value: call.value}(call.data);
             uint256 gasUsed = gasBefore - gasleft();
             
             if (call.gasLimit > 0 && gasUsed > call.gasLimit) {
                 revert("Gas limit exceeded");
             }
             
-            if (!success) {
+            // Strict ERC20 handling: if selector is known and returndata provided, it must decode to true
+            if (success) {
+                if (call.data.length >= 4) {
+                    bytes4 selector;
+                    assembly {
+                        selector := mload(add(call.data, 32))
+                    }
+                    // Normalize to first 4 bytes
+                    selector = bytes4(selector);
+                    // ERC20 selectors: transfer, transferFrom, approve, increaseAllowance, decreaseAllowance
+                    if (
+                        selector == 0xa9059cbb || // transfer(address,uint256)
+                        selector == 0x23b872dd || // transferFrom(address,address,uint256)
+                        selector == 0x095ea7b3 || // approve(address,uint256)
+                        selector == 0x39509351 || // increaseAllowance(address,uint256)
+                        selector == 0xa457c2d7    // decreaseAllowance(address,uint256)
+                    ) {
+                        if (ret.length > 0) {
+                            // Some ERC20s return no data on success; if data exists, it must be true
+                            bool ok;
+                            if (ret.length == 32) {
+                                assembly {
+                                    ok := mload(add(ret, 32))
+                                }
+                            } else {
+                                // Non-standard length → treat as failure
+                                ok = false;
+                            }
+                            if (!ok) {
+                                if (revertOnFail) {
+                                    revert("ERC20 returned false");
+                                }
+                                allSuccess = false;
+                            }
+                        }
+                    }
+                }
+            } else {
                 allSuccess = false;
                 if (revertOnFail) {
-                    revert("Call execution failed");
+                    // Bubble up revert data if present
+                    if (ret.length > 0) {
+                        assembly {
+                            revert(add(ret, 32), mload(ret))
+                        }
+                    } else {
+                        revert("Call execution failed");
+                    }
                 }
             }
         }
