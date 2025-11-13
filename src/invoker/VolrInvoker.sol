@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.24;
 
-import {IInvoker} from "../interfaces/IInvoker.sol";
 import {IPolicy} from "../interfaces/IPolicy.sol";
 import {IPolicyRegistry} from "../registry/PolicyRegistry.sol";
 import {Types} from "../libraries/Types.sol";
@@ -15,7 +14,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @notice ERC-7702 compatible invoker with policy-based validation
  * @dev Uses PolicyRegistry for strategy-based policy lookup
  */
-contract VolrInvoker is IInvoker, ReentrancyGuard {
+contract VolrInvoker is ReentrancyGuard {
     IPolicyRegistry public immutable registry;
     mapping(address => uint256) public opNonces;
     
@@ -53,6 +52,7 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
     function executeBatch(
         Types.Call[] calldata calls,
         Types.SessionAuth calldata auth,
+        address sessionKey,
         bytes calldata sig
     ) external payable nonReentrant {
         // Call 검증
@@ -62,8 +62,8 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
         bytes32 expectedCallsHash = keccak256(abi.encode(calls));
         require(auth.callsHash == expectedCallsHash, "Calls hash mismatch");
         
-        // EIP-712 서명 검증
-        address signer = _verifySignature(auth, sig);
+        // EIP-712 서명 검증 (SDK 정합)
+        address signer = _verifySignature(calls, auth, sessionKey, sig);
         
         // Policy 검증 via registry
         address policyAddr = registry.get(auth.policyId);
@@ -109,6 +109,7 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
     function sponsoredExecute(
         Types.Call[] calldata calls,
         Types.SessionAuth calldata auth,
+        address sessionKey,
         bytes calldata sig,
         address sponsor
     ) external nonReentrant {
@@ -119,8 +120,8 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
         bytes32 expectedCallsHash = keccak256(abi.encode(calls));
         require(auth.callsHash == expectedCallsHash, "Calls hash mismatch");
         
-        // EIP-712 서명 검증
-        address signer = _verifySignature(auth, sig);
+        // EIP-712 서명 검증 (SDK 정합)
+        address signer = _verifySignature(calls, auth, sessionKey, sig);
         
         // Policy 검증 via registry
         address policyAddr = registry.get(auth.policyId);
@@ -157,7 +158,9 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
     }
     
     function _verifySignature(
+        Types.Call[] calldata calls,
         Types.SessionAuth calldata auth,
+        address sessionKey,
         bytes calldata sig
     ) internal view returns (address) {
         require(sig.length == 65, "Invalid signature length");
@@ -184,8 +187,23 @@ contract VolrInvoker is IInvoker, ReentrancyGuard {
         // low-S 검증
         require(EIP712.validateLowS(s), "Invalid s (high-S)");
         
-        // EIP-712 해시 계산
-        bytes32 hash = EIP712.hashTypedDataV4(address(this), auth);
+        // EIP-712 해시 계산 (SDK와 동일한 도메인/타입)
+        // Copy calls to memory for hashing in library
+        Types.Call[] memory mCalls = new Types.Call[](calls.length);
+        for (uint256 i = 0; i < calls.length; i++) {
+            mCalls[i] = calls[i];
+        }
+        bytes32 hash = EIP712.hashSignedBatch(
+            uint256(auth.chainId),
+            sessionKey,
+            uint64(auth.expiry),
+            uint64(auth.opNonce),
+            auth.policyId,
+            uint256(auth.totalGasCap),
+            mCalls,
+            auth.revertOnFail,
+            auth.callsHash
+        );
         
         // 서명 복구 (recoverSigner는 v를 27 또는 28로 기대)
         address signer = Signature.recoverSigner(hash, v, r, s);
