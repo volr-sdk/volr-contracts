@@ -12,7 +12,10 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  */
 contract WhitelistPolicy is IPolicy, Ownable {
     mapping(address => bool) public whitelisted;
-    
+
+    // Error codes for validation failures
+    uint256 constant TARGET_NOT_WHITELISTED = 1;
+
     error TargetNotWhitelisted(address target);
     
     event TargetAdded(address indexed target);
@@ -49,10 +52,10 @@ contract WhitelistPolicy is IPolicy, Ownable {
         Types.SessionAuth calldata auth,
         Types.Call[] calldata calls
     ) external view override returns (bool ok, uint256 code) {
-        // Check each call target against whitelist
+        // Validate that all call targets are whitelisted
         for (uint256 i = 0; i < calls.length; i++) {
             if (!whitelisted[calls[i].target]) {
-                return (false, 1); // TARGET_NOT_WHITELISTED
+                return (false, TARGET_NOT_WHITELISTED);
             }
         }
         return (true, 0);

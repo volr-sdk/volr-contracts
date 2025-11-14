@@ -49,23 +49,23 @@ contract VolrInvokerTest is Test {
             data: hex"1234",
             gasLimit: 0
         });
-        
-        Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256(abi.encode(calls)),
-            revertOnFail: false,
+
+        bytes32 callsHash = keccak256(abi.encode(calls));
+
+        VolrInvoker.SessionAuth memory auth = VolrInvoker.SessionAuth({
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            expiresAt: uint64(block.timestamp + 3600),
+            nonce: 1,
             policyId: keccak256("policy"),
             totalGasCap: 0
         });
-        
+
         bytes memory invalidSig = hex"1234";
-        
+
         // 잘못된 서명으로 실행 시도
         vm.expectRevert();
-        invoker.executeBatch(calls, auth, invalidSig);
+        invoker.executeBatch(calls, auth, false, callsHash, invalidSig);
     }
 }
 
