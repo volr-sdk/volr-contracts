@@ -86,8 +86,11 @@ contract PromoPolicy is IPolicy, Ownable, ReentrancyGuard {
     function validate(
         Types.SessionAuth calldata auth,
         Types.Call[] calldata calls
-    ) external view override returns (bool ok, uint256 code) {
+    ) external pure override returns (bool ok, uint256 code) {
         // Always pass validation - budget check happens in onExecuted
+        // auth and calls are unused but kept for interface compatibility
+        auth;
+        calls;
         return (true, 0);
     }
     

@@ -43,7 +43,7 @@ contract WhitelistPolicy is IPolicy, Ownable {
     
     /**
      * @notice Validate session auth and calls
-     * @param auth Session authorization data
+     * @param auth Session authorization data (unused, kept for interface compatibility)
      * @param calls Array of calls to validate
      * @return ok Whether validation passed
      * @return code Error code if validation failed
@@ -53,6 +53,7 @@ contract WhitelistPolicy is IPolicy, Ownable {
         Types.Call[] calldata calls
     ) external view override returns (bool ok, uint256 code) {
         // Validate that all call targets are whitelisted
+        auth; // unused but kept for interface compatibility
         for (uint256 i = 0; i < calls.length; i++) {
             if (!whitelisted[calls[i].target]) {
                 return (false, TARGET_NOT_WHITELISTED);

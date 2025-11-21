@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {Types} from "../../src/libraries/Types.sol";
 
 contract TypesTest is Test {
-    function test_Call_Structure() public {
+    function test_Call_Structure() public pure {
         Types.Call memory call = Types.Call({
             target: address(0x1234),
             value: 0,
@@ -18,27 +18,28 @@ contract TypesTest is Test {
         assertEq(call.data, hex"1234");
     }
     
-    function test_SessionAuth_Structure() public {
+    function test_SessionAuth_Structure() public view {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: 1,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
-        assertEq(auth.callsHash, keccak256("test"));
-        assertEq(auth.revertOnFail, false);
         assertEq(auth.chainId, 1);
-        assertEq(auth.opNonce, 1);
-        assertEq(auth.expiry, uint64(block.timestamp + 3600));
-        assertEq(auth.scopeId, keccak256("scope"));
+        assertEq(auth.nonce, 1);
+        assertEq(auth.expiresAt, uint64(block.timestamp + 3600));
+        assertEq(auth.policyId, keccak256("policy"));
     }
     
-    function test_CallArray() public {
+    function test_CallArray() public pure {
         Types.Call[] memory calls = new Types.Call[](2);
         calls[0] = Types.Call({
             target: address(0x1),
@@ -58,4 +59,3 @@ contract TypesTest is Test {
         assertEq(calls[1].value, 1 ether);
     }
 }
-

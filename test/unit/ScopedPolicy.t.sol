@@ -18,13 +18,16 @@ contract ScopedPolicyTest is Test {
     
     function test_Validate_ChainId() public view {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
@@ -43,13 +46,16 @@ contract ScopedPolicyTest is Test {
     
     function test_Validate_Expired() public view {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp - 1), // 만료됨
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp - 1), // 만료됨
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
@@ -68,13 +74,16 @@ contract ScopedPolicyTest is Test {
     
     function test_Validate_NonceReplay() public {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
@@ -98,13 +107,16 @@ contract ScopedPolicyTest is Test {
     
     function test_Validate_Whitelist() public view {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
@@ -123,13 +135,16 @@ contract ScopedPolicyTest is Test {
     
     function test_Validate_ValueLimit() public view {
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256("test"),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: keccak256("scope"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
             policyId: keccak256("policy"),
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
@@ -146,4 +161,3 @@ contract ScopedPolicyTest is Test {
         assertFalse(ok);
     }
 }
-

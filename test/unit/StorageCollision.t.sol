@@ -35,33 +35,23 @@ contract StorageCollisionTest is Test {
     }
     
     function test_NoStorageCollision_BetweenImplementations() public {
-        // 두 개의 다른 구현체가 storage를 공유하지 않는지 확인
-        ScopedPolicy.PolicyConfig memory config1 = ScopedPolicy.PolicyConfig({
-            chainId: block.chainid,
-            allowedContracts: new address[](1),
-            allowedSelectors: new bytes4[](1),
-            maxValue: 0,
-            maxExpiry: 3600
-        });
-        config1.allowedContracts[0] = address(0x1111);
-        config1.allowedSelectors[0] = bytes4(0x11111111);
+        // Mock code for targets to pass code.length check
+        vm.etch(address(0x1111), hex"00");
+        vm.etch(address(0x2222), hex"00");
+
+        // 1. policy1 설정
+        policy1.setPolicy(policyId, block.chainid, 0, 3600, false);
+        policy1.setPair(policyId, address(0x1111), bytes4(0x11111111), true);
         
-        ScopedPolicy.PolicyConfig memory config2 = ScopedPolicy.PolicyConfig({
-            chainId: block.chainid,
-            allowedContracts: new address[](1),
-            allowedSelectors: new bytes4[](1),
-            maxValue: 0,
-            maxExpiry: 3600
-        });
-        config2.allowedContracts[0] = address(0x2222);
-        config2.allowedSelectors[0] = bytes4(0x22222222);
+        // 2. policy2 설정
+        policy2.setPolicy(policyId, block.chainid, 0, 3600, false);
+        policy2.setPair(policyId, address(0x2222), bytes4(0x22222222), true);
+
+        // 스냅샷 계산
+        (,,, bytes32 snapshot1,) = policy1.policies(policyId);
+
         
-        // 각각 다른 policy 설정
-        policy1.setPolicy(policyId, config1);
-        policy2.setPolicy(policyId, config2);
-        
-        // 각각 독립적인 storage를 가져야 함
-        // policies mapping은 직접 접근 불가하므로 validate를 통해 확인
+        // 3. 검증 준비
         Types.Call[] memory calls1 = new Types.Call[](1);
         calls1[0] = Types.Call({
             target: address(0x1111),
@@ -70,32 +60,26 @@ contract StorageCollisionTest is Test {
             gasLimit: 0
         });
         
-        Types.Call[] memory calls2 = new Types.Call[](1);
-        calls2[0] = Types.Call({
-            target: address(0x2222),
-            value: 0,
-            data: abi.encodePacked(bytes4(0x22222222)),
-            gasLimit: 0
-        });
-        
         Types.SessionAuth memory auth = Types.SessionAuth({
-            callsHash: keccak256(abi.encode(calls1)),
-            revertOnFail: false,
             chainId: block.chainid,
-            opNonce: 1,
-            expiry: uint64(block.timestamp + 3600),
-            scopeId: policyId,
-            policyId: keccak256("policy"),
+            sessionKey: address(this),
+            sessionId: 1,
+            nonce: 1,
+            expiresAt: uint64(block.timestamp + 3600),
+            policyId: policyId,
+            policySnapshotHash: snapshot1,
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
         
         // policy1은 config1을 사용하므로 calls1이 통과해야 함
-        // policy2는 config2를 사용하므로 calls1이 실패해야 함
         (bool ok1, ) = policy1.validate(auth, calls1);
+        assertTrue(ok1, "Policy1 should allow calls1");
+
+        // policy2는 config2를 사용하므로 calls1이 실패해야 함
         (bool ok2, ) = policy2.validate(auth, calls1);
-        
-        // policy1은 통과, policy2는 실패해야 함 (독립적인 storage)
-        // 실제로는 다른 검증 실패 가능하지만, 기본적으로는 독립적이어야 함
+        assertFalse(ok2, "Policy2 should deny calls1");
     }
 }
-

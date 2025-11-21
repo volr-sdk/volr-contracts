@@ -1,0 +1,35 @@
+{
+  "description": "Canonical single-call session for cross-repo EIP-712 verification",
+  "domain": {
+    "name": "volr",
+    "version": "1",
+    "chainId": 5115,
+    "verifyingContract": "0x7afd00eb8a95e30b695407ac51a7a2a06060b05d"
+  },
+  "auth": {
+    "chainId": 5115,
+    "sessionKey": "0xa1e9edd4673161a1f27c469caa15b0854fb51443",
+    "sessionId": 1,
+    "nonce": 987654321,
+    "expiresAt": 1764000000,
+    "policyId": "0x0000000000000000000000000000000000000000000000000000000000000042",
+    "policySnapshotHash": "0x10afefa334fba5ab2079ea4a75e8294b38d18163a992fec5c6434872f993de70",
+    "gasLimitMax": 200000,
+    "maxFeePerGas": 2000000000,
+    "maxPriorityFeePerGas": 1000000,
+    "totalGasCap": 400000
+  },
+  "calls": [
+    {
+      "target": "0xe32527f8b3f142a69278f22cda334d70644b9743",
+      "value": 0,
+      "data": "0xa9059cbb000000000000000000000000aa289325d1afc4aa040281b10dd9f10a8560d29600000000000000000000000000000000000000000000000000000000000186a0",
+      "gasLimit": 100000
+    }
+  ],
+  "callCount": 1,
+  "revertOnFail": true,
+  "callsHash": "0x08570cc7e5cc3cf15c0b0d39f86a574176c2e8efae635debcbc82b1bae4b3ef9",
+  "digest": "0xf3d2487de40ad90918d15b699275c33fb5e552c51d2c1153657fc82b748c427c"
+}
+

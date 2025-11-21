@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.24;
 
+import {ISponsor} from "../interfaces/ISponsor.sol";
 import {IPolicy} from "../interfaces/IPolicy.sol";
 import {IPolicyRegistry} from "../registry/PolicyRegistry.sol";
 import {Types} from "../libraries/Types.sol";
@@ -11,290 +12,236 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 /**
  * @title VolrInvoker
- * @notice ERC-7702 compatible invoker with policy-based validation
+ * @notice ERC-7702 compatible invoker with policy-based validation (no backward-compat)
  * @dev Uses PolicyRegistry for strategy-based policy lookup
  */
 contract VolrInvoker is ReentrancyGuard {
     IPolicyRegistry public immutable registry;
-    mapping(address => uint256) public opNonces;
-    
-    // SessionAuth for EIP-712 SignedBatch
-    struct SessionAuth {
-        uint256 chainId;
-        address sessionKey;
-        uint64  expiresAt;
-        uint64  nonce;
+    ISponsor public immutable sponsor;
+
+    // Single keyed nonce channel: keccak256(user, policyId, sessionId) -> last seq
+    mapping(bytes32 => uint64) public channelNonces;
+
+    // Sponsor voucher (co-sign gas caps & terms)
+    struct SponsorVoucher {
+        address sponsor;
         bytes32 policyId;
+        bytes32 policySnapshotHash;
+        uint64  sessionId;
+        uint64  nonce;
+        uint64  expiresAt;
+        uint256 gasLimitMax;
+        uint256 maxFeePerGas;
+        uint256 maxPriorityFeePerGas;
         uint256 totalGasCap;
     }
-    
+
     error PolicyViolation(uint256 code);
-    
+    error InvalidNonce();
+    error ExpiredSession();
+
     event BatchExecuted(
         address indexed user,
-        uint256 indexed opNonce,
+        bytes32 indexed policyId,
         bytes32 indexed callsHash,
+        bytes32 policySnapshotHash,
         bool success
     );
-    
+
     event SponsoredExecuted(
         address indexed user,
         address indexed sponsor,
-        uint256 indexed opNonce,
+        bytes32 indexed policyId,
         bytes32 callsHash,
+        bytes32 policySnapshotHash,
         bool success
     );
-    
-    /**
-     * @notice Constructor
-     * @param _registry PolicyRegistry address
-     */
-    constructor(address _registry) {
+
+    constructor(address _registry, address _sponsor) {
         registry = IPolicyRegistry(_registry);
+        sponsor = ISponsor(_sponsor);
     }
-    
-    
-    /**
-     * @notice Execute a batch of calls with sponsorship
-     * @param calls Array of calls to execute
-     * @param auth Session authorization
-     * @param revertOnFail If true, revert entire batch on first failure
-     * @param callsHash Keccak256 hash of ABI-encoded Call[]
-     * @param sessionSig EIP-712 signature over SignedBatch
-     * @param sponsor Sponsor address
-     */
+
+    // ---- Public entrypoints ----
+
     function sponsoredExecute(
         Types.Call[] calldata calls,
-        SessionAuth calldata auth,
+        Types.SessionAuth calldata auth,
+        SponsorVoucher calldata voucher,
         bool revertOnFail,
         bytes32 callsHash,
         bytes calldata sessionSig,
-        address sponsor
+        bytes calldata sponsorSig
     ) external nonReentrant {
-        // 0. Validate calls
-        require(CallValidator.validateCalls(calls), "Invalid calls");
+        uint256 startGas = gasleft();
+        address signer = _validateAndRecoverSigner(calls, auth, revertOnFail, callsHash, sessionSig);
+        _validateSponsorVoucher(auth, voucher, sponsorSig);
+        _enforceNonce(_channelKey(signer, auth.policyId, auth.sessionId), auth.nonce);
 
-        // 1. Validate callsHash matches provided calls
-        bytes32 expectedCallsHash = keccak256(abi.encode(calls));
-        require(callsHash == expectedCallsHash, "Calls hash mismatch");
+        bool success = _execute(calls, revertOnFail);
+        emit SponsoredExecuted(signer, voucher.sponsor, auth.policyId, callsHash, auth.policySnapshotHash, success);
 
-        // 2. Verify EIP-712 signature (domain matches SDK: sessionKey as verifying contract)
-        require(sessionSig.length == 65, "Invalid signature length");
-        bytes memory sigCopy = sessionSig;
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-        assembly {
-            r := mload(add(sigCopy, 32))
-            s := mload(add(sigCopy, 64))
-            v := byte(0, mload(add(sigCopy, 96)))
-        }
-        uint8 vNormalized = v >= 27 ? uint8(v - 27) : v;
-        require(Signature.validateYParity(vNormalized), "Invalid y-parity");
-        require(Signature.validateRS(r, s), "Invalid r or s");
-        require(EIP712.validateLowS(s), "Invalid s (high-S)");
-
-        // Copy calls to memory for hashing helper
-        Types.Call[] memory mCalls = new Types.Call[](calls.length);
-        for (uint256 i = 0; i < calls.length; i++) {
-            mCalls[i] = calls[i];
-        }
-
-        bytes32 digest = EIP712.hashSignedBatch(
-            auth.chainId,
-            auth.sessionKey,
-            auth.expiresAt,
-            auth.nonce,
-            auth.policyId,
-            auth.totalGasCap,
-            mCalls,
-            revertOnFail,
-            callsHash
-        );
-
-        address signer = Signature.recoverSigner(digest, v, r, s);
-        require(signer != address(0), "Invalid signature");
-
-        // 3. Policy validation (wrap V2 into legacy struct to reuse policies)
-        Types.SessionAuth memory legacy = Types.SessionAuth({
-            callsHash: callsHash,
-            revertOnFail: revertOnFail,
-            chainId: auth.chainId,
-            opNonce: auth.nonce,
-            expiry: auth.expiresAt,
-            scopeId: bytes32(0),
-            policyId: auth.policyId,
-            totalGasCap: auth.totalGasCap
-        });
-
-        // TEMPORARY: Skip policy validation during development
-        // TODO: Restore policy validation after proper setup
-        /*
-        address policyAddr = registry.get(auth.policyId);
-        IPolicy policy = IPolicy(policyAddr);
-        (bool policyOk, uint256 policyCode) = policy.validate(legacy, calls);
-        if (!policyOk) {
-            revert PolicyViolation(policyCode);
-        }
-        */
-
-        // 4. Nonce check
-        require(auth.nonce > opNonces[signer], "Invalid nonce");
-        opNonces[signer] = auth.nonce;
-
-        // 5. Execute
-        uint256 gasBefore = gasleft();
-        bool success = _executeCalls(calls, revertOnFail);
-        uint256 gasUsed = gasBefore - gasleft();
-
-        // 6. Policy hooks (temporarily disabled)
-        /*
-        if (success) {
-            try policy.onExecuted(msg.sender, legacy, calls, gasUsed) {} catch {}
-        } else {
-            bytes memory reason = "";
-            try policy.onFailed(msg.sender, legacy, calls, reason) {} catch {}
-        }
-        */
-
-        emit SponsoredExecuted(signer, sponsor, auth.nonce, callsHash, success);
+        uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
+        sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
     }
-    
-    /**
-     * @notice Execute a batch of calls
-     * @param calls Array of calls to execute
-     * @param auth Session authorization
-     * @param revertOnFail If true, revert entire batch on first failure
-     * @param callsHash Keccak256 hash of ABI-encoded Call[]
-     * @param sessionSig EIP-712 signature over SignedBatch
-     */
+
     function executeBatch(
         Types.Call[] calldata calls,
-        SessionAuth calldata auth,
+        Types.SessionAuth calldata auth,
         bool revertOnFail,
         bytes32 callsHash,
         bytes calldata sessionSig
     ) external payable nonReentrant {
-        // 0. Validate calls
+        uint256 startGas = gasleft();
+        address signer = _validateAndRecoverSigner(calls, auth, revertOnFail, callsHash, sessionSig);
+        _enforceNonce(_channelKey(signer, auth.policyId, auth.sessionId), auth.nonce);
+
+        bool success = _execute(calls, revertOnFail);
+        emit BatchExecuted(signer, auth.policyId, callsHash, auth.policySnapshotHash, success);
+
+        uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
+        sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+    }
+
+    // ---- Internal helpers ----
+
+    /**
+     * @notice Validate session auth and recover signer address
+     * @dev Validates calls, hash, expiry, signature, gas caps, and policy
+     * @return signer The recovered signer address
+     */
+    function _validateAndRecoverSigner(
+        Types.Call[] calldata calls,
+        Types.SessionAuth calldata auth,
+        bool revertOnFail,
+        bytes32 callsHash,
+        bytes calldata sessionSig
+    ) internal view returns (address signer) {
         require(CallValidator.validateCalls(calls), "Invalid calls");
-        
-        // 1. Validate callsHash matches provided calls
         bytes32 expectedCallsHash = keccak256(abi.encode(calls));
         require(callsHash == expectedCallsHash, "Calls hash mismatch");
-        
-        // 2. Verify EIP-712 signature (domain matches SDK: sessionKey as verifying contract)
+        if (auth.expiresAt < block.timestamp) revert ExpiredSession();
+
+        // Verify EIP-712 session signature
+        signer = _recoverSigner(auth, revertOnFail, calls, callsHash, sessionSig);
+        require(signer != address(0), "Invalid signature");
+
+        // Gas caps sanity
+        require(auth.gasLimitMax > 0, "gasLimitMax=0");
+        require(auth.totalGasCap >= auth.gasLimitMax, "totalGasCap<gasLimitMax");
+
+        // Policy validation
+        _validatePolicy(auth, calls);
+    }
+
+    function _recoverSigner(
+        Types.SessionAuth calldata auth,
+        bool revertOnFail,
+        Types.Call[] calldata calls,
+        bytes32 callsHash,
+        bytes calldata sessionSig
+    ) internal view returns (address) {
         require(sessionSig.length == 65, "Invalid signature length");
-        bytes memory sigCopy = sessionSig;
         bytes32 r;
         bytes32 s;
         uint8 v;
+        
+        // Use calldatacopy to safely read from calldata
+        bytes memory sig = sessionSig;
         assembly {
-            r := mload(add(sigCopy, 32))
-            s := mload(add(sigCopy, 64))
-            v := byte(0, mload(add(sigCopy, 96)))
+            r := mload(add(sig, 32))
+            s := mload(add(sig, 64))
+            v := byte(0, mload(add(sig, 96)))
         }
         uint8 vNormalized = v >= 27 ? uint8(v - 27) : v;
         require(Signature.validateYParity(vNormalized), "Invalid y-parity");
-        require(Signature.validateRS(r, s), "Invalid r or s");
         require(EIP712.validateLowS(s), "Invalid s (high-S)");
-        
-        // Copy calls to memory for hashing helper
+
         Types.Call[] memory mCalls = new Types.Call[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
             mCalls[i] = calls[i];
         }
-        
         bytes32 digest = EIP712.hashSignedBatch(
             auth.chainId,
+            address(this),
             auth.sessionKey,
-            auth.expiresAt,
+            auth.sessionId,
             auth.nonce,
+            auth.expiresAt,
             auth.policyId,
+            auth.policySnapshotHash,
+            auth.gasLimitMax,
+            auth.maxFeePerGas,
+            auth.maxPriorityFeePerGas,
             auth.totalGasCap,
             mCalls,
             revertOnFail,
             callsHash
         );
+        return Signature.recoverSigner(digest, v, r, s);
+    }
 
-        address signer = Signature.recoverSigner(digest, v, r, s);
-        require(signer != address(0), "Invalid signature");
+    function _validateSponsorVoucher(
+        Types.SessionAuth calldata auth,
+        SponsorVoucher calldata voucher,
+        bytes calldata sponsorSig
+    ) internal pure {
+        require(voucher.sponsor != address(0), "no sponsor");
+        require(voucher.policyId == auth.policyId, "policyId mismatch");
+        require(voucher.policySnapshotHash == auth.policySnapshotHash, "snapshot mismatch");
+        require(voucher.sessionId == auth.sessionId, "sessionId mismatch");
+        require(voucher.nonce == auth.nonce, "nonce mismatch");
+        require(voucher.expiresAt == auth.expiresAt, "expiry mismatch");
+        require(voucher.gasLimitMax == auth.gasLimitMax, "gasLimitMax mismatch");
+        require(voucher.maxFeePerGas == auth.maxFeePerGas, "maxFeePerGas mismatch");
+        require(voucher.maxPriorityFeePerGas == auth.maxPriorityFeePerGas, "maxPrioFee mismatch");
+        require(voucher.totalGasCap == auth.totalGasCap, "totalGasCap mismatch");
+        // Verify sponsorSig over voucher digest
+        bytes32 digest = EIP712.hashSponsorVoucher(
+            voucher.sponsor,
+            voucher.policyId,
+            voucher.policySnapshotHash,
+            voucher.sessionId,
+            voucher.nonce,
+            voucher.expiresAt,
+            voucher.gasLimitMax,
+            voucher.maxFeePerGas,
+            voucher.maxPriorityFeePerGas,
+            voucher.totalGasCap
+        );
+        require(Signature.verifyCalldataSig(voucher.sponsor, digest, sponsorSig), "invalid sponsorSig");
+    }
 
-        // 3. Policy validation (wrap V2 into legacy struct to reuse policies)
-        Types.SessionAuth memory legacy = Types.SessionAuth({
-            callsHash: callsHash,
-            revertOnFail: revertOnFail,
-            chainId: auth.chainId,
-            opNonce: auth.nonce,
-            expiry: auth.expiresAt,
-            scopeId: bytes32(0),
-            policyId: auth.policyId,
-            totalGasCap: auth.totalGasCap
-        });
-
-        // TEMPORARY: Skip policy validation during development
-        // TODO: Restore policy validation after proper setup
-        /*
+    function _validatePolicy(Types.SessionAuth memory auth, Types.Call[] calldata calls) internal view {
         address policyAddr = registry.get(auth.policyId);
         IPolicy policy = IPolicy(policyAddr);
-        (bool policyOk, uint256 policyCode) = policy.validate(legacy, calls);
+        (bool policyOk, uint256 policyCode) = policy.validate(auth, calls);
         if (!policyOk) {
             revert PolicyViolation(policyCode);
         }
-        */
-        
-        // 4. Nonce check
-        require(auth.nonce > opNonces[signer], "Invalid nonce");
-        opNonces[signer] = auth.nonce;
-        
-        // 5. Execute
-        uint256 gasBefore = gasleft();
-        bool success = _executeCalls(calls, revertOnFail);
-        uint256 gasUsed = gasBefore - gasleft();
-        
-        // 6. Policy hooks (temporarily disabled)
-        /*
-        if (success) {
-            try policy.onExecuted(msg.sender, legacy, calls, gasUsed) {} catch {}
-        } else {
-            bytes memory reason = "";
-            try policy.onFailed(msg.sender, legacy, calls, reason) {} catch {}
-        }
-        */
-        
-        emit BatchExecuted(signer, auth.nonce, callsHash, success);
     }
-    
-    function _executeCalls(
-        Types.Call[] calldata calls,
-        bool revertOnFail
-    ) internal returns (bool) {
+
+    function _channelKey(address user, bytes32 policyId, uint64 sessionId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(user, policyId, sessionId));
+    }
+
+    function _enforceNonce(bytes32 channel, uint64 nonce) internal {
+        if (nonce <= channelNonces[channel]) revert InvalidNonce();
+        channelNonces[channel] = nonce;
+    }
+
+    function _execute(Types.Call[] calldata calls, bool revertOnFail) internal returns (bool) {
         bool allSuccess = true;
-        
         for (uint256 i = 0; i < calls.length; i++) {
             Types.Call memory call = calls[i];
-            
-            // Guard: target must be a contract (prevent EOA no-op success)
             require(call.target.code.length > 0, "Target is not a contract");
-            
-            uint256 gasBefore = gasleft();
-            
-            // EIP-7702: 사용자 EOA가 Invoker 코드 실행
-            // call 사용: msg.sender = 사용자 EOA (Invoker 코드를 실행 중인 주소)
             (bool success, bytes memory ret) = call.target.call{
                 value: call.value,
                 gas: call.gasLimit > 0 ? call.gasLimit : gasleft()
             }(call.data);
-            
-            uint256 gasUsed = gasBefore - gasleft();
-            
-            if (call.gasLimit > 0 && gasUsed > call.gasLimit) {
-                revert("Gas limit exceeded");
-            }
-            
             if (!success) {
                 allSuccess = false;
                 if (revertOnFail) {
-                    // Bubble up revert data if present
                     if (ret.length > 0) {
                         assembly {
                             revert(add(ret, 32), mload(ret))
@@ -305,7 +252,6 @@ contract VolrInvoker is ReentrancyGuard {
                 }
             }
         }
-        
         return allSuccess;
     }
 }

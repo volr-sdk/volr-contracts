@@ -52,12 +52,17 @@ contract VolrInvokerTest is Test {
 
         bytes32 callsHash = keccak256(abi.encode(calls));
 
-        VolrInvoker.SessionAuth memory auth = VolrInvoker.SessionAuth({
+        Types.SessionAuth memory auth = Types.SessionAuth({
             chainId: block.chainid,
             sessionKey: address(this),
-            expiresAt: uint64(block.timestamp + 3600),
+            sessionId: 1,
             nonce: 1,
-            policyId: keccak256("policy"),
+            expiresAt: uint64(block.timestamp + 3600),
+            policyId: policyId,
+            policySnapshotHash: bytes32(0),
+            gasLimitMax: 0,
+            maxFeePerGas: 0,
+            maxPriorityFeePerGas: 0,
             totalGasCap: 0
         });
 

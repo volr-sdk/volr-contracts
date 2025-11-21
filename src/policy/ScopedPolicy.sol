@@ -1,168 +1,159 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
-import {BasePolicy} from "./BasePolicy.sol";
+import {IPolicy} from "../interfaces/IPolicy.sol";
 import {Types} from "../libraries/Types.sol";
-import {DelegationGuard} from "../libraries/DelegationGuard.sol";
 
-contract ScopedPolicy is BasePolicy {
-    // ERC-7201 Storage Namespacing
-    bytes32 public constant STORAGE_SLOT_POLICIES = keccak256("volr.ScopedPolicy.policies");
-    bytes32 public constant STORAGE_SLOT_NONCES = keccak256("volr.ScopedPolicy.usedNonces");
-    
+/**
+ * @title ScopedPolicy
+ * @notice Per-policyId scoping with (contract,selector) pairs, optional codehash checks,
+ *         and snapshot hashing to bind signed policy state.
+ * @dev Nonce/channel checks are enforced in Invoker.
+ */
+contract ScopedPolicy is IPolicy {
     struct PolicyConfig {
         uint256 chainId;
-        address[] allowedContracts;
-        bytes4[] allowedSelectors;
         uint256 maxValue;
-        uint64 maxExpiry;
+        uint64  maxExpiry;
+        bytes32 snapshotHash;
+        bool allowAll; // If true, skip pair/codeHash checks (but limits apply)
     }
-    
+
     mapping(bytes32 => PolicyConfig) public policies;
-    mapping(bytes32 => mapping(uint256 => bool)) public usedNonces;
+    mapping(bytes32 => mapping(address => mapping(bytes4 => bool))) public allowedPair;
+    mapping(bytes32 => mapping(address => bool)) public allowedContract; // New: Allow all selectors for contract
+    mapping(bytes32 => mapping(address => bytes32)) public allowedCodeHash;
     
-    event PolicySet(bytes32 indexed policyId, PolicyConfig config);
-    
-    function setPolicy(
-        bytes32 policyId,
-        PolicyConfig calldata config
-    ) external {
-        policies[policyId] = config;
-        emit PolicySet(policyId, config);
+    // Incremental roots to reflect configuration changes without iterating mappings
+    mapping(bytes32 => bytes32) public pairRoot;
+    mapping(bytes32 => bytes32) public contractRoot; // New: Root for allowed contracts
+    mapping(bytes32 => bytes32) public codeHashRoot;
+
+    event PolicySet(bytes32 indexed policyId, uint256 chainId, uint256 maxValue, uint64 maxExpiry, bool allowAll, bytes32 snapshotHash);
+    event PairSet(bytes32 indexed policyId, address indexed target, bytes4 indexed selector, bool allowed, bytes32 newSnapshot);
+    event ContractSet(bytes32 indexed policyId, address indexed target, bool allowed, bytes32 newSnapshot); // New event
+    event CodeHashSet(bytes32 indexed policyId, address indexed target, bytes32 codeHash, bytes32 newSnapshot);
+
+    function setPolicy(bytes32 policyId, uint256 chainId, uint256 maxValue, uint64 maxExpiry, bool allowAll) external {
+        policies[policyId].chainId = chainId;
+        policies[policyId].maxValue = maxValue;
+        policies[policyId].maxExpiry = maxExpiry;
+        policies[policyId].allowAll = allowAll;
+        // Reset roots on policy reset to avoid cross-contamination
+        pairRoot[policyId] = bytes32(0);
+        contractRoot[policyId] = bytes32(0);
+        codeHashRoot[policyId] = bytes32(0);
+        policies[policyId].snapshotHash = _computeSnapshot(policyId);
+        emit PolicySet(policyId, chainId, maxValue, maxExpiry, allowAll, policies[policyId].snapshotHash);
     }
-    
-    function validate(
-        Types.SessionAuth calldata auth,
-        Types.Call[] calldata calls
-    ) external view override returns (bool ok, uint256 code) {
-        // EIP-7702 delegation 체크 (화이트리스트 기반 엔드포인트 보호)
-        if (DelegationGuard.isDelegated(msg.sender)) {
-            return (false, 10); // DELEGATION_NOT_ALLOWED
-        }
-        
-        // scopeId를 policyId로 사용
-        bytes32 policyId = auth.scopeId;
-        PolicyConfig memory config = policies[policyId];
-        
-        // Policy가 설정되지 않았으면 거부
-        if (config.chainId == 0) {
-            return (false, 1); // POLICY_NOT_FOUND
-        }
-        
-        // 체인ID 검증
-        if (auth.chainId != config.chainId || auth.chainId != block.chainid) {
-            return (false, 2); // CHAIN_ID_MISMATCH
-        }
-        
-        // 만료 시간 검증
-        if (auth.expiry < block.timestamp) {
-            return (false, 3); // EXPIRED
-        }
-        
-        // 최대 만료 시간 검증
-        if (auth.expiry > block.timestamp + config.maxExpiry) {
-            return (false, 4); // EXPIRY_TOO_LONG
-        }
-        
-        // Nonce 재생 방지
-        if (usedNonces[policyId][auth.opNonce]) {
-            return (false, 5); // NONCE_REUSED
-        }
-        
-        // TotalGasCap 검증 (각 call의 gasLimit 합계 검증)
+
+    function setPair(bytes32 policyId, address target, bytes4 selector, bool allowed) external {
+        allowedPair[policyId][target][selector] = allowed;
+        // Incrementally update pair root (order-dependent but deterministic via event replay)
+        pairRoot[policyId] = keccak256(abi.encode(pairRoot[policyId], target, selector, allowed));
+        policies[policyId].snapshotHash = _computeSnapshot(policyId);
+        emit PairSet(policyId, target, selector, allowed, policies[policyId].snapshotHash);
+    }
+
+    function setContract(bytes32 policyId, address target, bool allowed) external {
+        allowedContract[policyId][target] = allowed;
+        // Incrementally update contract root
+        contractRoot[policyId] = keccak256(abi.encode(contractRoot[policyId], target, allowed));
+        policies[policyId].snapshotHash = _computeSnapshot(policyId);
+        emit ContractSet(policyId, target, allowed, policies[policyId].snapshotHash);
+    }
+
+    function setAllowedCodeHash(bytes32 policyId, address target, bytes32 codeHash) external {
+        allowedCodeHash[policyId][target] = codeHash;
+        // Incrementally update codehash root
+        codeHashRoot[policyId] = keccak256(abi.encode(codeHashRoot[policyId], target, codeHash));
+        policies[policyId].snapshotHash = _computeSnapshot(policyId);
+        emit CodeHashSet(policyId, target, codeHash, policies[policyId].snapshotHash);
+    }
+
+    function validate(Types.SessionAuth calldata auth, Types.Call[] calldata calls)
+        external view override returns (bool ok, uint256 code)
+    {
+        bytes32 policyId = auth.policyId;
+        PolicyConfig memory cfg = policies[policyId];
+        if (cfg.chainId == 0) return (false, 1);
+        if (auth.policySnapshotHash != cfg.snapshotHash) return (false, 11);
+        if (auth.chainId != cfg.chainId || auth.chainId != block.chainid) return (false, 2);
+        if (auth.expiresAt < block.timestamp) return (false, 3);
+        // Check expiry if limit set (maxExpiry != type(uint64).max)
+        if (cfg.maxExpiry != type(uint64).max && auth.expiresAt > block.timestamp + cfg.maxExpiry) return (false, 4);
+
         if (auth.totalGasCap > 0) {
             uint256 totalGasLimit = 0;
             for (uint256 i = 0; i < calls.length; i++) {
-                if (calls[i].gasLimit > 0) {
-                    totalGasLimit += calls[i].gasLimit;
-                }
+                if (calls[i].gasLimit > 0) totalGasLimit += calls[i].gasLimit;
             }
-            if (totalGasLimit > auth.totalGasCap) {
-                return (false, 9); // TOTAL_GAS_CAP_EXCEEDED
-            }
+            if (totalGasLimit > auth.totalGasCap) return (false, 9);
         }
-        
-        // Call 검증
+
         for (uint256 i = 0; i < calls.length; i++) {
-            Types.Call memory call = calls[i];
+            Types.Call calldata c = calls[i];
+            // Check value limit if set (maxValue != type(uint256).max)
+            if (cfg.maxValue != type(uint256).max && c.value > cfg.maxValue) return (false, 6);
             
-            // Value 검증
-            if (call.value > config.maxValue) {
-                return (false, 6); // VALUE_EXCEEDED
-            }
-            
-            // 화이트리스트 검증
-            bool contractAllowed = false;
-            for (uint256 j = 0; j < config.allowedContracts.length; j++) {
-                if (config.allowedContracts[j] == call.target) {
-                    contractAllowed = true;
-                    break;
-                }
-            }
-            
-            if (!contractAllowed) {
-                return (false, 7); // CONTRACT_NOT_ALLOWED
-            }
-            
-            // 함수 셀렉터 검증
-            if (call.data.length >= 4) {
-                bytes memory dataCopy = call.data;
-                bytes4 selector;
-                assembly {
-                    selector := mload(add(dataCopy, 32))
-                }
-                bool selectorAllowed = false;
-                for (uint256 j = 0; j < config.allowedSelectors.length; j++) {
-                    if (config.allowedSelectors[j] == selector) {
-                        selectorAllowed = true;
-                        break;
-                    }
-                }
+            if (c.target.code.length == 0) return (false, 12);
+
+            if (!cfg.allowAll) {
+                bytes32 required = allowedCodeHash[policyId][c.target];
+                address target = c.target;
+                bytes32 actual; assembly { actual := extcodehash(target) }
+                if (required != bytes32(0) && required != actual) return (false, 13);
                 
-                if (!selectorAllowed) {
-                    return (false, 8); // SELECTOR_NOT_ALLOWED
+                // Check if entire contract is allowed
+                if (!allowedContract[policyId][c.target]) {
+                    // If not, check specific pair
+                    bytes4 sel;
+                    bytes calldata data = c.data;
+                    if (data.length >= 4) {
+                        sel = bytes4(data[:4]);
+                    } else {
+                        sel = 0x00000000; // Fallback for empty data
+                    }
+                    
+                    if (!allowedPair[policyId][c.target][sel]) return (false, 8);
                 }
             }
         }
-        
         return (true, 0);
     }
-    
-    function markNonceUsed(bytes32 policyId, uint256 nonce) external {
-        usedNonces[policyId][nonce] = true;
-    }
-    
-    /**
-     * @notice Hook called after successful execution
-     * @param executor Address that executed the calls
-     * @param auth Session authorization data
-     * @param calls Array of calls that were executed
-     * @param gasUsed Gas used for execution
-     */
+
     function onExecuted(
-        address executor,
-        Types.SessionAuth calldata auth,
-        Types.Call[] calldata calls,
-        uint256 gasUsed
-    ) external override {
-        // Mark nonce as used
-        bytes32 policyId = auth.scopeId;
-        usedNonces[policyId][auth.opNonce] = true;
+        address, // executor
+        Types.SessionAuth calldata, // auth
+        Types.Call[] calldata, // calls
+        uint256 // gasUsed
+    ) external virtual override {
+        // No-op for basic scoped policy
     }
-    
-    /**
-     * @notice Hook called after failed execution (no-op)
-     * @param executor Address that executed the calls
-     * @param auth Session authorization data
-     * @param calls Array of calls that were executed
-     * @param reason Revert reason
-     */
+
     function onFailed(
-        address executor,
-        Types.SessionAuth calldata auth,
-        Types.Call[] calldata calls,
-        bytes calldata reason
-    ) external override {
-        // No-op on failure
+        address, // executor
+        Types.SessionAuth calldata, // auth
+        Types.Call[] calldata, // calls
+        bytes calldata // reason
+    ) external virtual override {
+        // No-op for basic scoped policy
+    }
+
+    function _computeSnapshot(bytes32 policyId) internal view returns (bytes32) {
+        PolicyConfig memory cfg = policies[policyId];
+        // Bind snapshot to config + accumulated roots of pairs, contracts, and codehashes
+        bytes32 material = keccak256(
+            abi.encode(
+                cfg.chainId,
+                cfg.maxValue,
+                cfg.maxExpiry,
+                cfg.allowAll,
+                pairRoot[policyId],
+                contractRoot[policyId],
+                codeHashRoot[policyId]
+            )
+        );
+        return keccak256(abi.encode(policyId, material));
     }
 }

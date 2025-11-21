@@ -41,18 +41,9 @@ contract FullFlowTest is Test {
         // Register policy in registry
         registry.register(policyId, address(policy), "test-policy");
         
-        // Policy 설정
-        ScopedPolicy.PolicyConfig memory config = ScopedPolicy.PolicyConfig({
-            chainId: block.chainid,
-            allowedContracts: new address[](1),
-            allowedSelectors: new bytes4[](1),
-            maxValue: 0,
-            maxExpiry: 3600
-        });
-        config.allowedContracts[0] = address(0x1234);
-        config.allowedSelectors[0] = bytes4(0x12345678);
-        
-        policy.setPolicy(policyId, config);
+        // Policy 설정 (Updated to use setPolicy method instead of struct)
+        policy.setPolicy(policyId, block.chainid, 0, 3600, false);
+        policy.setPair(policyId, address(0x1234), bytes4(0x12345678), true);
         
         // ClientSponsor 설정
         vm.prank(address(this));
@@ -78,4 +69,3 @@ contract FullFlowTest is Test {
         assertEq(clientSponsor.getBudget(client), 10 ether);
     }
 }
-

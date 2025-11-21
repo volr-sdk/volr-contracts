@@ -8,10 +8,14 @@ out = "out"
 libs = ["lib"]
 bytecode_hash = "none"
 cbor_metadata = false
+fs_permissions = [
+    { access = "read", path = "./test/fixtures" }
+]
 
 # Citrea Testnet
+# Note: rpc_url is not a valid profile option in foundry.toml
+# Use --rpc-url flag when running forge commands instead
 [profile.citrea_testnet]
-rpc_url = "https://rpc.testnet.citrea.xyz"
 chain_id = 5115
 
 # Citrea Explorer 검증 설정 (선택사항)

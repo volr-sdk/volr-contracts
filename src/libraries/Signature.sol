@@ -39,5 +39,24 @@ library Signature {
         // EIP-712 해시를 직접 사용 (추가 prefix 없음)
         return ecrecover(hash, vAdjusted, r, s);
     }
+
+    function verifyCalldataSig(
+        address expectedSigner,
+        bytes32 digest,
+        bytes calldata sig
+    ) internal pure returns (bool) {
+        if (sig.length != 65) return false;
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
+        }
+        uint8 vAdjusted = v >= 27 ? v : v + 27;
+        address recovered = ecrecover(digest, vAdjusted, r, s);
+        return recovered == expectedSigner;
+    }
 }
 

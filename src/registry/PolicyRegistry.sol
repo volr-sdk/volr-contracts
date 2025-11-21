@@ -46,13 +46,14 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
         address timelock;
         address multisig;
         address owner;
+        mapping(address => bool) relayers;
     }
     
     // keccak256(abi.encode(uint256(keccak256("volr.PolicyRegistry.v1")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant STORAGE_SLOT = 0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890;
+    bytes32 private constant STORAGE_SLOT = 0x25c88f03dcd50eacc408373df47c82f769296e10fa659eec6be11c621d6fde00;
     
     /// @notice Storage gap for future upgrades
-    uint256[50] private __gap;
+    uint256[49] private __gap;
     
     error PolicyNotFound();
     error PolicyAlreadyExists();
@@ -63,6 +64,7 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
     event PolicyUnregistered(bytes32 indexed policyId);
     event TimelockSet(address indexed timelock);
     event MultisigSet(address indexed multisig);
+    event RelayerSet(address indexed relayer, bool active);
     event UpgradeInitiated(address indexed oldImpl, address indexed newImpl, uint256 eta);
     event UpgradeExecuted(address indexed oldImpl, address indexed newImpl, uint256 timestamp);
     
@@ -91,14 +93,26 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
     }
     
     /**
-     * @notice Modifier to restrict access to timelock or multisig
+     * @notice Modifier to restrict access to timelock, multisig, or authorized relayer
      */
-    modifier onlyTimelockOrMultisig() {
+    modifier onlyAuthorized() {
         PolicyRegistryStorage storage $ = _getStorage();
-        if (msg.sender != $.timelock && msg.sender != $.multisig) revert Unauthorized();
+        if (msg.sender != $.timelock && msg.sender != $.multisig && !$.relayers[msg.sender] && msg.sender != $.owner) revert Unauthorized();
         _;
     }
     
+    /**
+     * @notice Set relayer status
+     * @param relayer Relayer address
+     * @param active Active status
+     */
+    function setRelayer(address relayer, bool active) external onlyAuthorized {
+        if (relayer == address(0)) revert ZeroAddress();
+        PolicyRegistryStorage storage $ = _getStorage();
+        $.relayers[relayer] = active;
+        emit RelayerSet(relayer, active);
+    }
+
     /**
      * @notice Set timelock address
      * @param _timelock Timelock address
@@ -127,7 +141,7 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
      * @param impl Policy implementation address
      * @param meta Metadata string
      */
-    function register(bytes32 policyId, address impl, string calldata meta) external onlyTimelockOrMultisig {
+    function register(bytes32 policyId, address impl, string calldata meta) external onlyAuthorized {
         if (impl == address(0)) revert ZeroAddress();
         PolicyRegistryStorage storage $ = _getStorage();
         if ($.policies[policyId] != address(0)) revert PolicyAlreadyExists();
@@ -140,7 +154,7 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
      * @notice Unregister a policy
      * @param policyId Policy ID
      */
-    function unregister(bytes32 policyId) external onlyTimelockOrMultisig {
+    function unregister(bytes32 policyId) external onlyAuthorized {
         PolicyRegistryStorage storage $ = _getStorage();
         if ($.policies[policyId] == address(0)) revert PolicyNotFound();
         delete $.policies[policyId];
@@ -164,7 +178,7 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
      * @notice Authorize upgrade (UUPS)
      * @param newImplementation New implementation address
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
+    function _authorizeUpgrade(address newImplementation) internal override onlyAuthorized {
         address oldImpl = ERC1967Utils.getImplementation();
         emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
     }

@@ -30,18 +30,27 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     
     struct ClientConfig {
         uint256 budget;
-        bytes32 policyId;
+        // bytes32 policyId; // DEPRECATED: Replaced by allowedPolicies mapping
         uint256 dailyLimit;
         uint256 perTxLimit;
         mapping(uint256 => uint256) dailyUsage; // date => amount
+        mapping(bytes32 => bool) allowedPolicies; // New: Multi-policy support
     }
     
     mapping(address => ClientConfig) public clients;
+    mapping(bytes32 => address) public policyToClient; // Policy -> Client mapping
     mapping(address => mapping(bytes32 => FailureCounter)) public failureCounters;
     address public volrSponsor;
     address public timelock;
     address public multisig;
     address private _owner;
+    
+    // Anti-grief configs
+    uint256 public minGasPerTx;           // 최소 가스 사용량(wei 단위 또는 gasUsed 포인트)
+    uint256 public userRpsLimit;          // 사용자별 초당 트랜잭션 허용 횟수
+    uint256 public userRpsWindowSeconds;  // 윈도 크기(초)
+    struct RpsState { uint256 windowStart; uint256 count; }
+    mapping(address => RpsState) public userRps;
     
     /// @notice Storage gap for future upgrades
     uint256[50] private __gap;
@@ -59,11 +68,15 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     );
     
     event BudgetSet(address indexed client, uint256 budget);
-    event PolicySet(address indexed client, bytes32 policyId);
+    event PolicySet(address indexed client, bytes32 policyId); // Legacy event, still emitted for compatibility/logging
+    event PolicyAdded(address indexed client, bytes32 policyId);
+    event PolicyRemoved(address indexed client, bytes32 policyId);
     event TimelockSet(address indexed timelock);
     event MultisigSet(address indexed multisig);
     event UpgradeInitiated(address indexed oldImpl, address indexed newImpl, uint256 eta);
     event UpgradeExecuted(address indexed oldImpl, address indexed newImpl, uint256 timestamp);
+    event AntiGriefSet(uint256 minGasPerTx, uint256 userRpsLimit, uint256 userRpsWindowSeconds);
+    event AttemptFeeCharged(address indexed client, address indexed user, uint256 amount, bytes32 indexed policyId, uint256 timestamp);
     
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -124,6 +137,20 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     /**
+     * @notice Set anti-grief parameters
+     */
+    function setAntiGrief(
+        uint256 _minGasPerTx,
+        uint256 _userRpsLimit,
+        uint256 _userRpsWindowSeconds
+    ) external onlyOwner {
+        minGasPerTx = _minGasPerTx;
+        userRpsLimit = _userRpsLimit;
+        userRpsWindowSeconds = _userRpsWindowSeconds == 0 ? 1 : _userRpsWindowSeconds;
+        emit AntiGriefSet(minGasPerTx, userRpsLimit, userRpsWindowSeconds);
+    }
+    
+    /**
      * @notice Set client budget
      * @param client Client address
      * @param budget Budget amount
@@ -134,13 +161,31 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     /**
-     * @notice Set client policy
+     * @notice Add allowed policy for client
+     */
+    function addPolicy(address client, bytes32 policyId) external onlyOwner {
+        clients[client].allowedPolicies[policyId] = true;
+        emit PolicyAdded(client, policyId);
+    }
+
+    /**
+     * @notice Remove allowed policy for client
+     */
+    function removePolicy(address client, bytes32 policyId) external onlyOwner {
+        clients[client].allowedPolicies[policyId] = false;
+        emit PolicyRemoved(client, policyId);
+    }
+
+    /**
+     * @notice Set client policy (Legacy support: adds policy, does not clear others)
      * @param client Client address
      * @param policyId Policy ID
      */
     function setPolicy(address client, bytes32 policyId) external onlyOwner {
-        clients[client].policyId = policyId;
+        // Legacy behavior: was setting a single field. Now we just enable it in the set.
+        clients[client].allowedPolicies[policyId] = true;
         emit PolicySet(client, policyId);
+        emit PolicyAdded(client, policyId);
     }
     
     /**
@@ -157,6 +202,40 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         clients[client].dailyLimit = dailyLimit;
         clients[client].perTxLimit = perTxLimit;
     }
+
+    /**
+     * @notice Deposit ETH and initialize policy for client (gasless onboarding)
+     * @dev Called by backend relayer when client deposits or uses coupon
+     * @param client Client address
+     * @param policyId Policy ID to enable
+     */
+    function depositAndInitialize(
+        address client,
+        bytes32 policyId
+    ) external payable {
+        // 1. Fund Budget (can be 0 if just initializing policy)
+        if (msg.value > 0) {
+            clients[client].budget += msg.value;
+            emit BudgetSet(client, clients[client].budget);
+        }
+        
+        // 2. Enable Policy (if not already)
+        if (!clients[client].allowedPolicies[policyId]) {
+            clients[client].allowedPolicies[policyId] = true;
+            emit PolicyAdded(client, policyId);
+        }
+        
+        // Map policy to client (overwrites if reassigned, but typically 1-to-1 in our model)
+        policyToClient[policyId] = client;
+        
+        // 3. Set Default Limits (if 0) - Unlimited
+        if (clients[client].dailyLimit == 0) {
+            clients[client].dailyLimit = type(uint256).max;
+        }
+        if (clients[client].perTxLimit == 0) {
+            clients[client].perTxLimit = type(uint256).max;
+        }
+    }
     
     /**
      * @notice Handle sponsorship request
@@ -169,9 +248,26 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         uint256 gasUsed,
         bytes32 policyId
     ) external override nonReentrant {
-        address client = msg.sender;
+        address client = policyToClient[policyId];
+        require(client != address(0), "Policy not mapped to client");
+
         ClientConfig storage config = clients[client];
         FailureCounter storage counter = failureCounters[client][policyId];
+        
+        // Anti-grief: 최소 가스 임계
+        if (minGasPerTx > 0) {
+            require(gasUsed >= minGasPerTx, "Below min gas per tx");
+        }
+        // Anti-grief: 사용자 RPS 제한
+        if (userRpsLimit > 0) {
+            RpsState storage rs = userRps[user];
+            if (block.timestamp - rs.windowStart >= userRpsWindowSeconds) {
+                rs.windowStart = block.timestamp;
+                rs.count = 0;
+            }
+            require(rs.count < userRpsLimit, "RPS limit exceeded");
+            rs.count += 1;
+        }
         
         // Rolling window 체크
         if (block.timestamp - counter.lastFailureTime > FAILURE_WINDOW_SECONDS) {
@@ -180,18 +276,15 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         if (counter.windowFailures >= MAX_WINDOW_FAILURES) {
             revert("Circuit breaker: too many failures in window");
         }
-        
         // Circuit Breaker 체크
         if (counter.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             revert("Circuit breaker: too many consecutive failures");
         }
         
-        // Policy 검증
-        require(config.policyId == policyId, "Invalid policy");
-        
+        // Policy 검증 (Multi-policy check)
+        require(config.allowedPolicies[policyId], "Policy not allowed for client");
         // 예산 검증
         require(config.budget >= gasUsed, "Insufficient budget");
-        
         // 한도 검증
         require(gasUsed <= config.perTxLimit, "Per-tx limit exceeded");
         
@@ -214,6 +307,12 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         if (volrSponsor != address(0)) {
             ISponsor(volrSponsor).compensateClient(client, gasUsed, policyId);
         }
+
+        // Refund Relayer (tx.origin) with ETH from client's budget
+        // Since budget is already deducted, we just transfer ETH to origin
+        // Note: This assumes ClientSponsor holds enough ETH (budget tracks ETH)
+        (bool success, ) = tx.origin.call{value: gasUsed}("");
+        require(success, "Refund failed");
     }
     
     /**
@@ -226,6 +325,28 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         counter.consecutiveFailures++;
         counter.windowFailures++;
         counter.lastFailureTime = block.timestamp;
+    }
+    
+    /**
+     * @notice Record failure and optionally charge attempt fee
+     */
+    function recordFailureAndCharge(
+        address client,
+        address user,
+        bytes32 policyId,
+        uint256 attemptFee
+    ) external {
+        FailureCounter storage counter = failureCounters[client][policyId];
+        counter.consecutiveFailures++;
+        counter.windowFailures++;
+        counter.lastFailureTime = block.timestamp;
+        
+        if (attemptFee > 0) {
+            ClientConfig storage config = clients[client];
+            require(config.budget >= attemptFee, "Insufficient budget");
+            config.budget -= attemptFee;
+            emit AttemptFeeCharged(client, user, attemptFee, policyId, block.timestamp);
+        }
     }
     
     /**
