@@ -60,3 +60,4 @@ SessionAuth(...)
 - 이 테스트가 성공하면 컨트랙트 쪽 타입 정의가 canonical fixture와 동기화되어 있음을 의미한다.
 
 
+

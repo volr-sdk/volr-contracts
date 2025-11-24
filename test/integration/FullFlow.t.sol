@@ -34,9 +34,11 @@ contract FullFlowTest is Test {
         registry = TestHelpers.deployPolicyRegistry(address(this));
         registry.setTimelock(address(this));
         registry.setMultisig(address(this));
-        invoker = new VolrInvoker(address(registry));
+        
         clientSponsor = TestHelpers.deployClientSponsor(address(this));
         volrSponsor = TestHelpers.deployVolrSponsor(address(this));
+        
+        invoker = new VolrInvoker(address(registry), address(clientSponsor));
         
         // Register policy in registry
         registry.register(policyId, address(policy), "test-policy");

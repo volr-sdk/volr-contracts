@@ -13,11 +13,16 @@ contract VoucherTarget {
     function ping() external {}
 }
 
+contract MockSponsor {
+    function handleSponsorship(address, uint256, bytes32) external {}
+}
+
 contract SponsorVoucherTest is Test {
     VolrInvoker public invoker;
     PolicyRegistry public registry;
     ScopedPolicy public policy;
     VoucherTarget public target;
+    MockSponsor public mockSponsor;
 
     address public user; uint256 public userPk;
     address public sponsor; uint256 public sponsorPk;
@@ -27,7 +32,8 @@ contract SponsorVoucherTest is Test {
         (user, userPk) = makeAddrAndKey("user");
         (sponsor, sponsorPk) = makeAddrAndKey("sponsor");
         registry = TestHelpers.deployPolicyRegistry(address(this));
-        invoker = new VolrInvoker(address(registry));
+        mockSponsor = new MockSponsor();
+        invoker = new VolrInvoker(address(registry), address(mockSponsor));
         policy = new ScopedPolicy();
         target = new VoucherTarget();
 

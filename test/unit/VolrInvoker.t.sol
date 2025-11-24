@@ -10,10 +10,15 @@ import {EIP712} from "../../src/libraries/EIP712.sol";
 
 import {TestHelpers} from "../helpers/TestHelpers.sol";
 
+contract MockSponsor {
+    function handleSponsorship(address, uint256, bytes32) external {}
+}
+
 contract VolrInvokerTest is Test {
     VolrInvoker public invoker;
     ScopedPolicy public policy;
     PolicyRegistry public registry;
+    MockSponsor public mockSponsor;
     address public user;
     uint256 public userKey;
     bytes32 public policyId;
@@ -28,7 +33,9 @@ contract VolrInvokerTest is Test {
         registry.setTimelock(address(this));
         registry.setMultisig(address(this));
         registry.register(policyId, address(policy), "test-policy");
-        invoker = new VolrInvoker(address(registry));
+        
+        mockSponsor = new MockSponsor();
+        invoker = new VolrInvoker(address(registry), address(mockSponsor));
     }
     
     function test_Deploy() public {

@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {VolrInvoker} from "../../src/invoker/VolrInvoker.sol";
 import {PolicyRegistry} from "../../src/registry/PolicyRegistry.sol";
 import {ScopedPolicy} from "../../src/policy/ScopedPolicy.sol";
+import {ClientSponsor} from "../../src/sponsor/ClientSponsor.sol";
 import {Types} from "../../src/libraries/Types.sol";
 import {EIP712} from "../../src/libraries/EIP712.sol";
 import {TestHelpers} from "../helpers/TestHelpers.sol";
@@ -23,6 +24,7 @@ contract PolicyTest is Test {
     VolrInvoker public invoker;
     PolicyRegistry public registry;
     ScopedPolicy public policy;
+    ClientSponsor public clientSponsor;
     DummyTarget public target;
 
     address public user;
@@ -32,7 +34,8 @@ contract PolicyTest is Test {
     function setUp() public {
         (user, userPk) = makeAddrAndKey("user");
         registry = TestHelpers.deployPolicyRegistry(address(this));
-        invoker = new VolrInvoker(address(registry));
+        clientSponsor = TestHelpers.deployClientSponsor(address(this));
+        invoker = new VolrInvoker(address(registry), address(clientSponsor));
         policy = new ScopedPolicy();
         target = new DummyTarget();
 
