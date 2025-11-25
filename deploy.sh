@@ -120,8 +120,8 @@ cd ..
 
 echo ""
 echo "📝 Next steps:"
-echo "   1. Register chain in backend DB:"
-echo "      cd volr-backend && yarn register-chain dev ${CHAIN_ID}"
-echo "      (or: yarn register-chain local ${CHAIN_ID} / yarn register-chain prod ${CHAIN_ID})"
+echo "   1. Upsert chain in backend DB:"
+echo "      cd volr-backend && yarn upsert-chain dev ${CHAIN_ID}"
+echo "      (or: yarn upsert-chain local ${CHAIN_ID} / yarn upsert-chain prod ${CHAIN_ID})"
 echo "   2. Restart backend server"
 

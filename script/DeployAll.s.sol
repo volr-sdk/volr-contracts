@@ -70,9 +70,9 @@ contract DeployAll is Script {
 
         // 6. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
         console.log("\n=== 6. Register Relayer ===");
-        bool hasRelayer = vm.envOr("RELAYER_ADDRESS", bytes32(0)) != bytes32(0);
+        address relayerAddr = vm.envOr("RELAYER_ADDRESS", address(0));
+        bool hasRelayer = relayerAddr != address(0);
         if (hasRelayer) {
-            address relayerAddr = vm.envAddress("RELAYER_ADDRESS");
             registry.setRelayer(relayerAddr, true);
             console.log("Relayer registered:", relayerAddr);
         } else {

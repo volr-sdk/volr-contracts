@@ -114,6 +114,19 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
     }
 
     /**
+     * @notice Check whether an address is an authorized relayer
+     * @param relayer Relayer address
+     * @return True if the address is configured as relayer
+     *
+     * @dev 별도의 view 함수로 노출해서 온체인에서 relayer 상태를 쉽게 조회할 수 있도록 한다.
+     *      Storage 레이아웃은 그대로 두고, 읽기 전용 getter 만 추가한다.
+     */
+    function isRelayer(address relayer) external view returns (bool) {
+        PolicyRegistryStorage storage $ = _getStorage();
+        return $.relayers[relayer];
+    }
+
+    /**
      * @notice Set timelock address
      * @param _timelock Timelock address
      */

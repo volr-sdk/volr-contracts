@@ -57,12 +57,12 @@ RPC_URL_5115="https://rpc.testnet.citrea.xyz"  # Chain-specific RPC
    # Example: ./deploy.sh 5115
    ```
 
-2. **Register chain in backend DB**:
+2. **Upsert chain in backend DB**:
    ```bash
    cd ../volr-backend
-   yarn register-chain dev <CHAIN_ID>
-   # or: yarn register-chain local <CHAIN_ID>
-   # or: yarn register-chain prod <CHAIN_ID>
+   yarn upsert-chain dev <CHAIN_ID>
+   # or: yarn upsert-chain local <CHAIN_ID>
+   # or: yarn upsert-chain prod <CHAIN_ID>
    ```
 
 3. **Reset database (optional, for clean start)**:
