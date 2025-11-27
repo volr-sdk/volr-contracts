@@ -8,66 +8,312 @@ import {PolicyRegistry} from "../../src/registry/PolicyRegistry.sol";
 import {ClientSponsor} from "../../src/sponsor/ClientSponsor.sol";
 import {VolrSponsor} from "../../src/sponsor/VolrSponsor.sol";
 import {Types} from "../../src/libraries/Types.sol";
-import {EIP712} from "../../src/libraries/EIP712.sol";
 
 import {TestHelpers} from "../helpers/TestHelpers.sol";
+import {SignatureHelper} from "../helpers/SignatureHelper.sol";
+import {MockTarget} from "../helpers/MockContracts.sol";
 
+/**
+ * @title FullFlowTest
+ * @notice Integration tests for the complete Volr flow
+ */
 contract FullFlowTest is Test {
     VolrInvoker public invoker;
     ScopedPolicy public policy;
     PolicyRegistry public registry;
     ClientSponsor public clientSponsor;
     VolrSponsor public volrSponsor;
+    MockTarget public target;
     
-    address public user;
+    address public owner;
     address public client;
+    address public user;
     uint256 public userKey;
     bytes32 public policyId;
+    bytes32 public policySnapshotHash;
     
     function setUp() public {
+        owner = address(this);
+        client = address(0x1111);
         userKey = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef;
         user = vm.addr(userKey);
-        client = address(0x1111);
         policyId = keccak256("test-policy");
         
+        // Deploy all contracts
+        target = new MockTarget();
         policy = new ScopedPolicy();
-        registry = TestHelpers.deployPolicyRegistry(address(this));
-        registry.setTimelock(address(this));
-        registry.setMultisig(address(this));
+        registry = TestHelpers.deployPolicyRegistry(owner);
+        clientSponsor = TestHelpers.deployClientSponsor(owner);
+        volrSponsor = TestHelpers.deployVolrSponsor(owner);
         
-        clientSponsor = TestHelpers.deployClientSponsor(address(this));
-        volrSponsor = TestHelpers.deployVolrSponsor(address(this));
-        
-        invoker = new VolrInvoker(address(registry), address(clientSponsor));
-        
-        // Register policy in registry
+        // Configure registry
+        registry.setTimelock(owner);
+        registry.setMultisig(owner);
         registry.register(policyId, address(policy), "test-policy");
         
-        // Policy 설정 (Updated to use setPolicy method instead of struct)
-        policy.setPolicy(policyId, block.chainid, 0, 3600, false);
-        policy.setPair(policyId, address(0x1234), bytes4(0x12345678), true);
+        // Deploy invoker with client sponsor
+        invoker = TestHelpers.deployVolrInvoker(owner, address(registry), address(clientSponsor));
+        invoker.setTimelock(owner);
+        invoker.setMultisig(owner);
         
-        // ClientSponsor 설정
-        vm.prank(address(this));
-        clientSponsor.setBudget(client, 10 ether);
-        vm.prank(address(this));
-        clientSponsor.setPolicy(client, policyId);
-        vm.prank(address(this));
-        clientSponsor.setLimits(client, 100 ether, 10 ether);
+        // Configure policy
+        policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);
+        (, , , policySnapshotHash, ) = policy.policies(policyId);
         
-        // VolrSponsor 설정
-        vm.prank(address(this));
-        volrSponsor.setSubsidyRate(policyId, 2000); // 20%
-        
-        // ClientSponsor에 VolrSponsor 연결
-        vm.prank(address(this));
+        // Configure sponsors
+        clientSponsor.setTimelock(owner);
+        clientSponsor.setMultisig(owner);
         clientSponsor.setVolrSponsor(address(volrSponsor));
+        
+        volrSponsor.setTimelock(owner);
+        volrSponsor.setMultisig(owner);
+        volrSponsor.setSubsidyRate(policyId, 2000); // 20% subsidy
+        
+        // Fund sponsors
+        vm.deal(address(clientSponsor), 100 ether);
+        vm.deal(address(volrSponsor), 100 ether);
+        
+        // Initialize client
+        clientSponsor.depositAndInitialize{value: 10 ether}(client, policyId);
     }
     
-    function test_FullFlow() public {
-        // 전체 플로우 테스트는 서명 생성이 필요하므로 복잡함
-        // 기본 구조만 확인
-        assertEq(registry.get(policyId), address(policy));
-        assertEq(clientSponsor.getBudget(client), 10 ether);
+    // ============ Full Flow Tests ============
+    
+    function test_FullFlow_SingleCall() public {
+        // Arrange
+        Types.Call[] memory calls = new Types.Call[](1);
+        calls[0] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.increment, ())
+        );
+        
+        Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+            block.chainid,
+            user,
+            policyId,
+            policySnapshotHash
+        );
+        
+        bytes32 callsHash = keccak256(abi.encode(calls));
+        bytes memory sig = SignatureHelper.signSessionAuth(
+            userKey,
+            address(invoker),
+            auth,
+            calls,
+            false,
+            callsHash
+        );
+        
+        uint256 clientBudgetBefore = clientSponsor.getBudget(client);
+        
+        // Act
+        invoker.executeBatch(calls, auth, false, callsHash, sig);
+        
+        // Assert
+        assertEq(target.counter(), 1);
+        // Budget should be reduced (gas was used)
+        assertLt(clientSponsor.getBudget(client), clientBudgetBefore);
+    }
+    
+    function test_FullFlow_MultipleCalls() public {
+        // Arrange
+        Types.Call[] memory calls = new Types.Call[](3);
+        calls[0] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.increment, ())
+        );
+        calls[1] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.incrementBy, (10))
+        );
+        calls[2] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.setCounter, (100))
+        );
+        
+        Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+            block.chainid,
+            user,
+            policyId,
+            policySnapshotHash
+        );
+        
+        bytes32 callsHash = keccak256(abi.encode(calls));
+        bytes memory sig = SignatureHelper.signSessionAuth(
+            userKey,
+            address(invoker),
+            auth,
+            calls,
+            false,
+            callsHash
+        );
+        
+        // Act
+        invoker.executeBatch(calls, auth, false, callsHash, sig);
+        
+        // Assert - last call sets counter to 100
+        assertEq(target.counter(), 100);
+    }
+    
+    function test_FullFlow_WithValue() public {
+        // Arrange
+        uint256 value = 0.5 ether;
+        vm.deal(address(this), value);
+        
+        Types.Call[] memory calls = new Types.Call[](1);
+        calls[0] = SignatureHelper.createCallWithValue(
+            address(target),
+            abi.encodeCall(MockTarget.payableIncrement, ()),
+            value,
+            200_000
+        );
+        
+        Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+            block.chainid,
+            user,
+            policyId,
+            policySnapshotHash
+        );
+        
+        bytes32 callsHash = keccak256(abi.encode(calls));
+        bytes memory sig = SignatureHelper.signSessionAuth(
+            userKey,
+            address(invoker),
+            auth,
+            calls,
+            false,
+            callsHash
+        );
+        
+        // Act
+        invoker.executeBatch{value: value}(calls, auth, false, callsHash, sig);
+        
+        // Assert
+        assertEq(target.counter(), 1);
+        assertEq(target.lastValue(), value);
+        assertEq(address(target).balance, value);
+    }
+    
+    function test_FullFlow_SequentialTransactions() public {
+        // Execute multiple transactions sequentially with increasing nonces
+        for (uint64 i = 1; i <= 5; i++) {
+            Types.Call[] memory calls = new Types.Call[](1);
+            calls[0] = SignatureHelper.createCall(
+                address(target),
+                abi.encodeCall(MockTarget.increment, ())
+            );
+            
+            Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+                block.chainid,
+                user,
+                policyId,
+                policySnapshotHash
+            );
+            auth.nonce = i;
+            
+            bytes32 callsHash = keccak256(abi.encode(calls));
+            bytes memory sig = SignatureHelper.signSessionAuth(
+                userKey,
+                address(invoker),
+                auth,
+                calls,
+                false,
+                callsHash
+            );
+            
+            invoker.executeBatch(calls, auth, false, callsHash, sig);
+        }
+        
+        // Assert
+        assertEq(target.counter(), 5);
+    }
+    
+    // ============ Policy Validation Tests ============
+    
+    function test_FullFlow_PolicyWhitelist_AllowedPair() public {
+        // Create a new policy with specific pair whitelist
+        bytes32 restrictedPolicyId = keccak256("restricted-policy");
+        policy.setPolicy(restrictedPolicyId, block.chainid, type(uint256).max, type(uint64).max, false);
+        policy.setPair(restrictedPolicyId, address(target), MockTarget.increment.selector, true);
+        bytes32 restrictedSnapshotHash;
+        (, , , restrictedSnapshotHash, ) = policy.policies(restrictedPolicyId);
+        
+        registry.register(restrictedPolicyId, address(policy), "restricted");
+        clientSponsor.addPolicy(client, restrictedPolicyId);
+        
+        // Map policy to client
+        vm.deal(address(this), 1 ether);
+        clientSponsor.depositAndInitialize{value: 1 ether}(client, restrictedPolicyId);
+        
+        // Arrange
+        Types.Call[] memory calls = new Types.Call[](1);
+        calls[0] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.increment, ())
+        );
+        
+        Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+            block.chainid,
+            user,
+            restrictedPolicyId,
+            restrictedSnapshotHash
+        );
+        
+        bytes32 callsHash = keccak256(abi.encode(calls));
+        bytes memory sig = SignatureHelper.signSessionAuth(
+            userKey,
+            address(invoker),
+            auth,
+            calls,
+            false,
+            callsHash
+        );
+        
+        // Act
+        invoker.executeBatch(calls, auth, false, callsHash, sig);
+        
+        // Assert
+        assertEq(target.counter(), 1);
+    }
+    
+    function test_FullFlow_PolicyWhitelist_DisallowedPair_Reverts() public {
+        // Create a new policy with specific pair whitelist
+        bytes32 restrictedPolicyId = keccak256("restricted-policy-2");
+        policy.setPolicy(restrictedPolicyId, block.chainid, type(uint256).max, type(uint64).max, false);
+        // Only allow increment, not incrementBy
+        policy.setPair(restrictedPolicyId, address(target), MockTarget.increment.selector, true);
+        bytes32 restrictedSnapshotHash;
+        (, , , restrictedSnapshotHash, ) = policy.policies(restrictedPolicyId);
+        
+        registry.register(restrictedPolicyId, address(policy), "restricted-2");
+        
+        // Arrange - try to call incrementBy (not whitelisted)
+        Types.Call[] memory calls = new Types.Call[](1);
+        calls[0] = SignatureHelper.createCall(
+            address(target),
+            abi.encodeCall(MockTarget.incrementBy, (5))
+        );
+        
+        Types.SessionAuth memory auth = SignatureHelper.createDefaultAuth(
+            block.chainid,
+            user,
+            restrictedPolicyId,
+            restrictedSnapshotHash
+        );
+        
+        bytes32 callsHash = keccak256(abi.encode(calls));
+        bytes memory sig = SignatureHelper.signSessionAuth(
+            userKey,
+            address(invoker),
+            auth,
+            calls,
+            false,
+            callsHash
+        );
+        
+        // Act & Assert
+        vm.expectRevert(abi.encodeWithSelector(VolrInvoker.PolicyViolation.selector, 8));
+        invoker.executeBatch(calls, auth, false, callsHash, sig);
     }
 }
+

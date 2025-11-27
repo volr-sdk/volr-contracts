@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {PolicyRegistry} from "../../src/registry/PolicyRegistry.sol";
 import {ClientSponsor} from "../../src/sponsor/ClientSponsor.sol";
 import {VolrSponsor} from "../../src/sponsor/VolrSponsor.sol";
+import {VolrInvoker} from "../../src/invoker/VolrInvoker.sol";
 
 /**
  * @title TestHelpers
@@ -49,6 +50,28 @@ library TestHelpers {
         );
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
         return VolrSponsor(payable(address(proxy)));
+    }
+    
+    /**
+     * @notice Deploy and initialize VolrInvokerUpgradeable via proxy
+     * @param owner Owner address for upgrade authorization
+     * @param registry PolicyRegistry address
+     * @param sponsor Sponsor address
+     */
+    function deployVolrInvoker(
+        address owner,
+        address registry,
+        address sponsor
+    ) internal returns (VolrInvoker) {
+        VolrInvoker impl = new VolrInvoker();
+        bytes memory initData = abi.encodeWithSelector(
+            VolrInvoker.initialize.selector,
+            registry,
+            sponsor,
+            owner
+        );
+        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
+        return VolrInvoker(payable(address(proxy)));
     }
 }
 

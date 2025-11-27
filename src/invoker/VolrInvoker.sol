@@ -8,19 +8,47 @@ import {Types} from "../libraries/Types.sol";
 import {EIP712} from "../libraries/EIP712.sol";
 import {Signature} from "../libraries/Signature.sol";
 import {CallValidator} from "../libraries/CallValidator.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 
 /**
  * @title VolrInvoker
- * @notice ERC-7702 compatible invoker with policy-based validation (no backward-compat)
+ * @notice ERC-7702 compatible invoker with UUPS upgradeability and token receiver support
  * @dev Uses PolicyRegistry for strategy-based policy lookup
+ *      Implements IERC721Receiver and IERC1155Receiver for safe token transfers
  */
-contract VolrInvoker is ReentrancyGuard {
-    IPolicyRegistry public immutable registry;
-    ISponsor public immutable sponsor;
-
+contract VolrInvoker is 
+    Initializable, 
+    UUPSUpgradeable, 
+    ReentrancyGuard,
+    IERC721Receiver,
+    IERC1155Receiver
+{
+    // ============ ERC-7201 Storage ============
+    
+    /// @custom:storage-location erc7201:volr.VolrInvoker.v1
+    struct InvokerStorage {
+        IPolicyRegistry registry;
+        ISponsor sponsor;
+        address timelock;
+        address multisig;
+        address owner;
     // Single keyed nonce channel: keccak256(user, policyId, sessionId) -> last seq
-    mapping(bytes32 => uint64) public channelNonces;
+        mapping(bytes32 => uint64) channelNonces;
+    }
+    
+    // keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant STORAGE_SLOT = 0x8a0c9d8ec1d9f8b4a1c2e3f4d5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f300;
+    
+    /// @notice Storage gap for future upgrades
+    uint256[50] private __gap;
+    
+    // ============ Structs ============
 
     // Sponsor voucher (co-sign gas caps & terms)
     struct SponsorVoucher {
@@ -35,10 +63,16 @@ contract VolrInvoker is ReentrancyGuard {
         uint256 maxPriorityFeePerGas;
         uint256 totalGasCap;
     }
+    
+    // ============ Errors ============
 
     error PolicyViolation(uint256 code);
     error InvalidNonce();
     error ExpiredSession();
+    error Unauthorized();
+    error ZeroAddress();
+    
+    // ============ Events ============
 
     event BatchExecuted(
         address indexed user,
@@ -57,12 +91,79 @@ contract VolrInvoker is ReentrancyGuard {
         bool success
     );
 
-    constructor(address _registry, address _sponsor) {
-        registry = IPolicyRegistry(_registry);
-        sponsor = ISponsor(_sponsor);
+    event TimelockSet(address indexed timelock);
+    event MultisigSet(address indexed multisig);
+    event UpgradeInitiated(address indexed oldImpl, address indexed newImpl, uint256 eta);
+    
+    // ============ Constructor ============
+    
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
     }
-
-    // ---- Public entrypoints ----
+    
+    // ============ Initializer ============
+    
+    /**
+     * @notice Initialize the contract
+     * @param _registry PolicyRegistry address
+     * @param _sponsor Sponsor address
+     * @param _owner Owner address for upgrade authorization
+     */
+    function initialize(
+        address _registry,
+        address _sponsor,
+        address _owner
+    ) external initializer {
+        if (_registry == address(0) || _sponsor == address(0) || _owner == address(0)) {
+            revert ZeroAddress();
+        }
+        
+        InvokerStorage storage $ = _getStorage();
+        $.registry = IPolicyRegistry(_registry);
+        $.sponsor = ISponsor(_sponsor);
+        $.owner = _owner;
+    }
+    
+    // ============ Modifiers ============
+    
+    modifier onlyOwner() {
+        InvokerStorage storage $ = _getStorage();
+        require(msg.sender == $.owner, "Not owner");
+        _;
+    }
+    
+    modifier onlyTimelockOrMultisig() {
+        InvokerStorage storage $ = _getStorage();
+        if (msg.sender != $.timelock && msg.sender != $.multisig) revert Unauthorized();
+        _;
+    }
+    
+    // ============ Admin Functions ============
+    
+    /**
+     * @notice Set timelock address
+     * @param _timelock Timelock address
+     */
+    function setTimelock(address _timelock) external onlyOwner {
+        if (_timelock == address(0)) revert ZeroAddress();
+        InvokerStorage storage $ = _getStorage();
+        $.timelock = _timelock;
+        emit TimelockSet(_timelock);
+    }
+    
+    /**
+     * @notice Set multisig address
+     * @param _multisig Multisig address
+     */
+    function setMultisig(address _multisig) external onlyOwner {
+        if (_multisig == address(0)) revert ZeroAddress();
+        InvokerStorage storage $ = _getStorage();
+        $.multisig = _multisig;
+        emit MultisigSet(_multisig);
+    }
+    
+    // ============ Public Entrypoints ============
 
     function sponsoredExecute(
         Types.Call[] calldata calls,
@@ -82,7 +183,8 @@ contract VolrInvoker is ReentrancyGuard {
         emit SponsoredExecuted(signer, voucher.sponsor, auth.policyId, callsHash, auth.policySnapshotHash, success);
 
         uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
-        sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+        InvokerStorage storage $ = _getStorage();
+        $.sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
     }
 
     function executeBatch(
@@ -100,10 +202,180 @@ contract VolrInvoker is ReentrancyGuard {
         emit BatchExecuted(signer, auth.policyId, callsHash, auth.policySnapshotHash, success);
 
         uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
-        sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+        InvokerStorage storage $ = _getStorage();
+        $.sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+    }
+    
+    // ============ ERC721 Receiver ============
+    
+    /**
+     * @notice Handle the receipt of an NFT
+     * @dev The ERC721 smart contract calls this function on the recipient
+     *      after a `safeTransfer`. This function MAY throw to revert and reject the
+     *      transfer. Return of other than the magic value MUST result in the
+     *      transaction being reverted.
+     * @return bytes4 `bytes4(keccak256("onERC721Received(address,address,uint256,bytes)"))`
+     */
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+    
+    // ============ ERC1155 Receiver ============
+    
+    /**
+     * @notice Handle the receipt of a single ERC1155 token type
+     * @return bytes4 `bytes4(keccak256("onERC1155Received(address,address,uint256,uint256,bytes)"))`
+     */
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+    
+    /**
+     * @notice Handle the receipt of multiple ERC1155 token types
+     * @return bytes4 `bytes4(keccak256("onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)"))`
+     */
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
+    }
+    
+    // ============ ERC-1363 Receiver (Payable Token) ============
+    
+    /**
+     * @notice Handle the receipt of ERC-1363 tokens
+     * @dev Called after `transferAndCall` or `transferFromAndCall`
+     * @return bytes4 `bytes4(keccak256("onTransferReceived(address,address,uint256,bytes)"))`
+     */
+    function onTransferReceived(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return bytes4(keccak256("onTransferReceived(address,address,uint256,bytes)"));
+    }
+    
+    /**
+     * @notice Handle the approval of ERC-1363 tokens
+     * @dev Called after `approveAndCall`
+     * @return bytes4 `bytes4(keccak256("onApprovalReceived(address,uint256,bytes)"))`
+     */
+    function onApprovalReceived(
+        address,
+        uint256,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return bytes4(keccak256("onApprovalReceived(address,uint256,bytes)"));
+    }
+    
+    // ============ ERC-777 Receiver ============
+    
+    /**
+     * @notice Handle the receipt of ERC-777 tokens
+     * @dev Called by ERC-777 token contracts after tokens are sent
+     */
+    function tokensReceived(
+        address,
+        address,
+        address,
+        uint256,
+        bytes calldata,
+        bytes calldata
+    ) external pure {
+        // Accept tokens - no action needed
+    }
+    
+    // ============ ERC165 ============
+    
+    /**
+     * @notice Query if a contract implements an interface
+     * @param interfaceId The interface identifier
+     * @return True if the contract implements `interfaceId`
+     */
+    function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
+        return
+            interfaceId == type(IERC165).interfaceId ||           // 0x01ffc9a7
+            interfaceId == type(IERC721Receiver).interfaceId ||   // 0x150b7a02
+            interfaceId == type(IERC1155Receiver).interfaceId ||  // 0x4e2312e0
+            interfaceId == 0x88a7ca5c ||                          // IERC1363Receiver
+            interfaceId == 0x7b04a2d0 ||                          // IERC1363Spender
+            interfaceId == 0x0023de29;                            // IERC777Recipient
+    }
+    
+    // ============ View Functions ============
+    
+    /**
+     * @notice Get the nonce for a channel
+     * @param channel Channel key
+     * @return Current nonce
+     */
+    function channelNonces(bytes32 channel) external view returns (uint64) {
+        InvokerStorage storage $ = _getStorage();
+        return $.channelNonces[channel];
+    }
+    
+    /**
+     * @notice Get the registry address
+     * @return Registry address
+     */
+    function registry() external view returns (IPolicyRegistry) {
+        InvokerStorage storage $ = _getStorage();
+        return $.registry;
+    }
+    
+    /**
+     * @notice Get the sponsor address
+     * @return Sponsor address
+     */
+    function sponsor() external view returns (ISponsor) {
+        InvokerStorage storage $ = _getStorage();
+        return $.sponsor;
+    }
+    
+    /**
+     * @notice Get the owner address
+     * @return Owner address
+     */
+    function owner() external view returns (address) {
+        InvokerStorage storage $ = _getStorage();
+        return $.owner;
+    }
+    
+    /**
+     * @notice Get the timelock address
+     * @return Timelock address
+     */
+    function timelock() external view returns (address) {
+        InvokerStorage storage $ = _getStorage();
+        return $.timelock;
+    }
+    
+    /**
+     * @notice Get the multisig address
+     * @return Multisig address
+     */
+    function multisig() external view returns (address) {
+        InvokerStorage storage $ = _getStorage();
+        return $.multisig;
     }
 
-    // ---- Internal helpers ----
+    // ============ Internal Helpers ============
 
     /**
      * @notice Validate session auth and recover signer address
@@ -213,7 +485,8 @@ contract VolrInvoker is ReentrancyGuard {
     }
 
     function _validatePolicy(Types.SessionAuth memory auth, Types.Call[] calldata calls) internal view {
-        address policyAddr = registry.get(auth.policyId);
+        InvokerStorage storage $ = _getStorage();
+        address policyAddr = $.registry.get(auth.policyId);
         IPolicy policy = IPolicy(policyAddr);
         (bool policyOk, uint256 policyCode) = policy.validate(auth, calls);
         if (!policyOk) {
@@ -226,8 +499,9 @@ contract VolrInvoker is ReentrancyGuard {
     }
 
     function _enforceNonce(bytes32 channel, uint64 nonce) internal {
-        if (nonce <= channelNonces[channel]) revert InvalidNonce();
-        channelNonces[channel] = nonce;
+        InvokerStorage storage $ = _getStorage();
+        if (nonce <= $.channelNonces[channel]) revert InvalidNonce();
+        $.channelNonces[channel] = nonce;
     }
 
     function _execute(Types.Call[] calldata calls, bool revertOnFail) internal returns (bool) {
@@ -254,5 +528,28 @@ contract VolrInvoker is ReentrancyGuard {
         }
         return allSuccess;
     }
+    
+    // ============ Storage Access ============
+    
+    function _getStorage() private pure returns (InvokerStorage storage $) {
+        assembly {
+            $.slot := STORAGE_SLOT
+        }
+    }
+    
+    // ============ UUPS ============
+    
+    /**
+     * @notice Authorize upgrade (UUPS)
+     * @param newImplementation New implementation address
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
+        address oldImpl = ERC1967Utils.getImplementation();
+        emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
+    }
+    
+    // ============ Receive ETH ============
+    
+    receive() external payable {}
 }
 

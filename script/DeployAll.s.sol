@@ -11,7 +11,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 
 /**
  * @title DeployAll
- * @notice Deploy all Volr contracts: Registry, Invoker, Sponsors, Policy Impl.
+ * @notice Deploy all Volr contracts: Registry, Invoker (UUPS), Sponsors, Policy Impl.
  */
 contract DeployAll is Script {
     function run() external {
@@ -33,16 +33,13 @@ contract DeployAll is Script {
         PolicyRegistry registry = PolicyRegistry(address(registryProxy));
         console.log("Registry Proxy:", address(registry));
 
-        // 2. VolrInvoker (Immutable) - Moved after ClientSponsor deployment
-        // Invoker now depends on ClientSponsor address
-        
-        // 3. ScopedPolicy (Implementation only)
-        console.log("\n=== 3. ScopedPolicy (Impl) ===");
+        // 2. ScopedPolicy (Implementation only)
+        console.log("\n=== 2. ScopedPolicy (Impl) ===");
         ScopedPolicy policyImpl = new ScopedPolicy();
         console.log("ScopedPolicy Impl:", address(policyImpl));
 
-        // 4. ClientSponsor (UUPS Proxy)
-        console.log("\n=== 4. ClientSponsor ===");
+        // 3. ClientSponsor (UUPS Proxy)
+        console.log("\n=== 3. ClientSponsor ===");
         ClientSponsor clientSponsorImpl = new ClientSponsor();
         bytes memory clientSponsorInit = abi.encodeWithSelector(
             ClientSponsor.initialize.selector,
@@ -52,10 +49,19 @@ contract DeployAll is Script {
         ClientSponsor clientSponsor = ClientSponsor(payable(address(clientSponsorProxy)));
         console.log("ClientSponsor Proxy:", address(clientSponsor));
 
-        // 2. VolrInvoker (Immutable) - Deployed after ClientSponsor
-        console.log("\n=== 2. VolrInvoker ===");
-        VolrInvoker invoker = new VolrInvoker(address(registry), address(clientSponsor));
-        console.log("VolrInvoker:", address(invoker));
+        // 4. VolrInvoker (UUPS Proxy) - Deployed after ClientSponsor
+        console.log("\n=== 4. VolrInvoker ===");
+        VolrInvoker invokerImpl = new VolrInvoker();
+        bytes memory invokerInit = abi.encodeWithSelector(
+            VolrInvoker.initialize.selector,
+            address(registry),
+            address(clientSponsor),
+            deployer
+        );
+        ERC1967Proxy invokerProxy = new ERC1967Proxy(address(invokerImpl), invokerInit);
+        VolrInvoker invoker = VolrInvoker(payable(address(invokerProxy)));
+        console.log("VolrInvoker Proxy:", address(invoker));
+        console.log("VolrInvoker Impl :", address(invokerImpl));
 
         // 5. VolrSponsor (UUPS Proxy)
         console.log("\n=== 5. VolrSponsor ===");
@@ -68,8 +74,14 @@ contract DeployAll is Script {
         VolrSponsor volrSponsor = VolrSponsor(payable(address(volrSponsorProxy)));
         console.log("VolrSponsor Proxy:", address(volrSponsor));
 
-        // 6. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
-        console.log("\n=== 6. Register Relayer ===");
+        // 6. Configure Invoker governance
+        console.log("\n=== 6. Configure Invoker ===");
+        invoker.setTimelock(deployer);
+        invoker.setMultisig(deployer);
+        console.log("Invoker timelock/multisig set to deployer");
+
+        // 7. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
+        console.log("\n=== 7. Register Relayer ===");
         address relayerAddr = vm.envOr("RELAYER_ADDRESS", address(0));
         bool hasRelayer = relayerAddr != address(0);
         if (hasRelayer) {
@@ -83,13 +95,14 @@ contract DeployAll is Script {
         vm.stopBroadcast();
 
         console.log("\n=== Deployment Summary ===");
-        console.log("Network ID       : %s", block.chainid);
-        console.log("PolicyRegistry   : %s", address(registry));
-        console.log("VolrInvoker      : %s", address(invoker));
-        console.log("ScopedPolicy Impl: %s", address(policyImpl));
-        console.log("ClientSponsor    : %s", address(clientSponsor));
-        console.log("VolrSponsor      : %s", address(volrSponsor));
+        console.log("Network ID            : %s", block.chainid);
+        console.log("PolicyRegistry (Proxy): %s", address(registry));
+        console.log("VolrInvoker (Proxy)   : %s", address(invoker));
+        console.log("ScopedPolicy (Impl)   : %s", address(policyImpl));
+        console.log("ClientSponsor (Proxy) : %s", address(clientSponsor));
+        console.log("VolrSponsor (Proxy)   : %s", address(volrSponsor));
         
         console.log("\n[Action Required] Update backend/DB with these addresses.");
+        console.log("[Note] VolrInvoker is now upgradeable via UUPS proxy.");
     }
 }
