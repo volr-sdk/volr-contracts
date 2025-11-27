@@ -247,6 +247,119 @@ contract ScopedPolicyTest is Test {
         assertEq(code, 9); // Total gas exceeds cap
     }
     
+    // ============ Phase 2-2: Policy Owner Access Control ============
+    
+    function test_SetPolicy_ClaimsOwnership() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        
+        assertEq(policy.policyOwner(policyId), address(this));
+    }
+    
+    function test_SetPolicy_OnlyOwnerCanModify() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        
+        // Another user tries to modify
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(ScopedPolicy.NotPolicyOwner.selector);
+        policy.setPolicy(policyId, block.chainid, 2 ether, 7200, true);
+    }
+    
+    function test_SetPair_OnlyOwnerCanModify() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        
+        // Another user tries to set pair
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(ScopedPolicy.NotPolicyOwner.selector);
+        policy.setPair(policyId, target, selector, true);
+    }
+    
+    function test_SetContract_OnlyOwnerCanModify() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        
+        // Another user tries to set contract
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(ScopedPolicy.NotPolicyOwner.selector);
+        policy.setContract(policyId, target, true);
+    }
+    
+    function test_FinalizePolicy_OnlyOwnerCanFinalize() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        
+        // Another user tries to finalize
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(ScopedPolicy.NotPolicyOwner.selector);
+        policy.finalizePolicy(policyId);
+    }
+    
+    function test_FinalizePolicy_OwnerCanFinalize() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        policy.finalizePolicy(policyId);
+        
+        assertTrue(policy.policyFinalized(policyId));
+    }
+    
+    function test_SetPolicy_CannotModifyAfterFinalized() public {
+        policy.setPolicy(policyId, block.chainid, 1 ether, 3600, false);
+        policy.finalizePolicy(policyId);
+        
+        vm.expectRevert(ScopedPolicy.PolicyAlreadyFinalized.selector);
+        policy.setPolicy(policyId, block.chainid, 2 ether, 7200, true);
+    }
+    
+    // ============ Phase 2-3: TotalGasCap with gasLimit=0 ============
+    
+    function test_Validate_GasLimitZero_UsesGasLimitMax() public {
+        policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);
+        bytes32 snapshotHash = _getSnapshotHash(policyId);
+        
+        Types.SessionAuth memory auth = _createAuth(policyId, snapshotHash);
+        auth.gasLimitMax = 500_000;
+        auth.totalGasCap = 400_000; // Less than gasLimitMax
+        
+        // Call with gasLimit=0 should be treated as gasLimitMax
+        Types.Call[] memory calls = new Types.Call[](1);
+        calls[0] = Types.Call({
+            target: address(this),
+            value: 0,
+            data: abi.encodeWithSelector(selector),
+            gasLimit: 0 // Should use gasLimitMax (500_000)
+        });
+        
+        (bool ok, uint256 code) = policy.validate(auth, calls);
+        
+        assertFalse(ok);
+        assertEq(code, 9); // Total gas exceeds cap (500_000 > 400_000)
+    }
+    
+    function test_Validate_GasLimitZero_MultipleCallsExceedsCap() public {
+        policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);
+        bytes32 snapshotHash = _getSnapshotHash(policyId);
+        
+        Types.SessionAuth memory auth = _createAuth(policyId, snapshotHash);
+        auth.gasLimitMax = 300_000;
+        auth.totalGasCap = 500_000;
+        
+        // Two calls with gasLimit=0 should each use gasLimitMax (300_000 * 2 = 600_000)
+        Types.Call[] memory calls = new Types.Call[](2);
+        calls[0] = Types.Call({
+            target: address(this),
+            value: 0,
+            data: abi.encodeWithSelector(selector),
+            gasLimit: 0
+        });
+        calls[1] = Types.Call({
+            target: address(this),
+            value: 0,
+            data: abi.encodeWithSelector(selector),
+            gasLimit: 0
+        });
+        
+        (bool ok, uint256 code) = policy.validate(auth, calls);
+        
+        assertFalse(ok);
+        assertEq(code, 9); // Total gas exceeds cap (600_000 > 500_000)
+    }
+    
     // ============ Helpers ============
     
     function _getSnapshotHash(bytes32 _policyId) internal view returns (bytes32 snapshotHash) {

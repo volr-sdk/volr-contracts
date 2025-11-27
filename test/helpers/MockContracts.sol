@@ -320,18 +320,19 @@ contract MockSponsor {
     mapping(address => uint256) public userSponsored;
     mapping(bytes32 => uint256) public policySponsored;
     
-    event SponsorshipHandled(address indexed user, uint256 gasUsed, bytes32 indexed policyId);
+    event SponsorshipHandled(address indexed user, uint256 gasUsed, bytes32 indexed policyId, address relayer);
     event ClientCompensated(address indexed client, uint256 gasUsed, bytes32 indexed policyId);
     
     function handleSponsorship(
         address user,
         uint256 gasUsed,
-        bytes32 policyId
+        bytes32 policyId,
+        address relayer
     ) external {
         totalSponsored += gasUsed;
         userSponsored[user] += gasUsed;
         policySponsored[policyId] += gasUsed;
-        emit SponsorshipHandled(user, gasUsed, policyId);
+        emit SponsorshipHandled(user, gasUsed, policyId, relayer);
     }
     
     function compensateClient(

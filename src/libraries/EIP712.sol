@@ -103,7 +103,15 @@ library EIP712 {
         return keccak256(abi.encodePacked("\x19\x01", domain, batchHash));
     }
 
+    /**
+     * @notice Hash sponsor voucher with proper EIP-712 domain binding (F5 fix)
+     * @dev Cross-chain replay prevention via chainId + verifyingContract in domain
+     * @param chainId Chain ID for domain separator
+     * @param verifyingContract Contract address for domain separator (Invoker)
+     */
     function hashSponsorVoucher(
+        uint256 chainId,
+        address verifyingContract,
         address sponsor,
         bytes32 policyId,
         bytes32 policySnapshotHash,
@@ -130,9 +138,9 @@ library EIP712 {
                 totalGasCap
             )
         );
-        // Sponsor voucher is domain-less to allow off-chain signing tied to voucher semantics only
-        // If you want domain separation, pass chainId+verifyingContract here instead.
-        return keccak256(abi.encodePacked("\x19\x01", bytes32(0), structHash));
+        // F5 fix: Use proper EIP-712 domain separator for cross-chain replay protection
+        bytes32 domain = domainSeparator(chainId, verifyingContract);
+        return keccak256(abi.encodePacked("\x19\x01", domain, structHash));
     }
     
     function validateLowS(bytes32 s) internal pure returns (bool) {

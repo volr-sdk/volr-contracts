@@ -80,8 +80,20 @@ contract DeployAll is Script {
         invoker.setMultisig(deployer);
         console.log("Invoker timelock/multisig set to deployer");
 
-        // 7. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
-        console.log("\n=== 7. Register Relayer ===");
+        // 7. Configure ClientSponsor (F1 fix: set invoker for access control)
+        console.log("\n=== 7. Configure ClientSponsor ===");
+        clientSponsor.setInvoker(address(invoker));
+        clientSponsor.setVolrSponsor(address(volrSponsor));
+        console.log("ClientSponsor invoker set to:", address(invoker));
+        console.log("ClientSponsor volrSponsor set to:", address(volrSponsor));
+
+        // 8. Configure VolrSponsor (F2 fix: authorize ClientSponsor as caller)
+        console.log("\n=== 8. Configure VolrSponsor ===");
+        volrSponsor.setAuthorizedCaller(address(clientSponsor), true);
+        console.log("VolrSponsor authorized caller:", address(clientSponsor));
+
+        // 9. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
+        console.log("\n=== 9. Register Relayer ===");
         address relayerAddr = vm.envOr("RELAYER_ADDRESS", address(0));
         bool hasRelayer = relayerAddr != address(0);
         if (hasRelayer) {

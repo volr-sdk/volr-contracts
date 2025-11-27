@@ -17,10 +17,14 @@ library DelegationGuard {
     }
     
     modifier noEIP7702Delegation() {
+        _checkNoEIP7702Delegation();
+        _;
+    }
+    
+    function _checkNoEIP7702Delegation() internal view {
         if (isDelegated(msg.sender)) {
             revert DelegationNotAllowed();
         }
-        _;
     }
 }
 

@@ -87,18 +87,26 @@ contract PolicyRegistry is IPolicyRegistry, Initializable, UUPSUpgradeable {
      * @notice Modifier to restrict access to owner
      */
     modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+    
+    function _checkOwner() internal view {
         PolicyRegistryStorage storage $ = _getStorage();
         require(msg.sender == $.owner, "Not owner");
-        _;
     }
     
     /**
      * @notice Modifier to restrict access to timelock, multisig, or authorized relayer
      */
     modifier onlyAuthorized() {
+        _checkAuthorized();
+        _;
+    }
+    
+    function _checkAuthorized() internal view {
         PolicyRegistryStorage storage $ = _getStorage();
         if (msg.sender != $.timelock && msg.sender != $.multisig && !$.relayers[msg.sender] && msg.sender != $.owner) revert Unauthorized();
-        _;
     }
     
     /**

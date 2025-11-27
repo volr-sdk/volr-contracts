@@ -6,7 +6,6 @@ import {VolrInvoker} from "../../../src/invoker/VolrInvoker.sol";
 import {ScopedPolicy} from "../../../src/policy/ScopedPolicy.sol";
 import {PolicyRegistry} from "../../../src/registry/PolicyRegistry.sol";
 import {Types} from "../../../src/libraries/Types.sol";
-import {EIP712} from "../../../src/libraries/EIP712.sol";
 
 import {TestHelpers} from "../../helpers/TestHelpers.sol";
 import {SignatureHelper} from "../../helpers/SignatureHelper.sol";
@@ -103,6 +102,8 @@ contract SponsoredExecuteTest is Test {
         
         bytes memory sponsorSig = SignatureHelper.signSponsorVoucher(
             sponsorKey,
+            block.chainid,
+            address(invoker),
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,
@@ -159,6 +160,8 @@ contract SponsoredExecuteTest is Test {
         
         bytes memory sponsorSig = SignatureHelper.signSponsorVoucher(
             sponsorKey,
+            block.chainid,
+            address(invoker),
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,
@@ -269,6 +272,8 @@ contract SponsoredExecuteTest is Test {
         
         bytes memory sponsorSig = SignatureHelper.signSponsorVoucher(
             sponsorKey,
+            block.chainid,
+            address(invoker),
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,
@@ -324,6 +329,8 @@ contract SponsoredExecuteTest is Test {
         
         bytes memory sponsorSig = SignatureHelper.signSponsorVoucher(
             sponsorKey,
+            block.chainid,
+            address(invoker),
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,
@@ -380,6 +387,8 @@ contract SponsoredExecuteTest is Test {
         uint256 wrongKey = 0xdead;
         bytes memory sponsorSig = SignatureHelper.signSponsorVoucher(
             wrongKey,
+            block.chainid,
+            address(invoker),
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,

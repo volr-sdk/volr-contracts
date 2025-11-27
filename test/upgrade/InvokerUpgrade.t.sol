@@ -2,7 +2,6 @@
 pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {VolrInvoker} from "../../src/invoker/VolrInvoker.sol";
 import {ScopedPolicy} from "../../src/policy/ScopedPolicy.sol";
 import {PolicyRegistry} from "../../src/registry/PolicyRegistry.sol";
@@ -266,6 +265,21 @@ contract InvokerUpgradeTest is Test {
         assertTrue(invokerUpgraded.supportsInterface(0x01ffc9a7));
         assertTrue(invokerUpgraded.supportsInterface(0x150b7a02));
         assertTrue(invokerUpgraded.supportsInterface(0x4e2312e0));
+    }
+    
+    // ============ Phase 2-6: Upgrade Safety ============
+    
+    function test_Upgrade_ToEOA_Reverts() public {
+        // Try to upgrade to an EOA (address with no code)
+        address eoa = address(0xDEADBEEF);
+        
+        vm.expectRevert("Implementation is not a contract");
+        invoker.upgradeToAndCall(eoa, "");
+    }
+    
+    function test_Upgrade_ToZeroAddress_Reverts() public {
+        vm.expectRevert("Implementation is not a contract");
+        invoker.upgradeToAndCall(address(0), "");
     }
 }
 

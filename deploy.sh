@@ -52,20 +52,26 @@ forge script script/DeployAll.s.sol \
     --broadcast \
     -vvv 2>&1 | tee "$TEMP_OUTPUT"
 
-# Extract addresses from Deployment Summary section (most reliable)
-# Match patterns: "PolicyRegistry   : 0x..." from Deployment Summary
-POLICY_REGISTRY=$(grep "PolicyRegistry   :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-VOLR_INVOKER=$(grep "VolrInvoker      :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-SCOPED_POLICY_IMPL=$(grep "ScopedPolicy Impl:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-CLIENT_SPONSOR=$(grep "ClientSponsor    :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-VOLR_SPONSOR=$(grep "VolrSponsor      :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+# Extract addresses from Deployment Summary section
+# Match patterns from actual log output:
+#   PolicyRegistry (Proxy): 0x...
+#   VolrInvoker (Proxy)   : 0x...
+#   ScopedPolicy (Impl)   : 0x...
+#   ClientSponsor (Proxy) : 0x...
+#   VolrSponsor (Proxy)   : 0x...
 
-# Fallback to individual log lines if Deployment Summary not found
+POLICY_REGISTRY=$(grep "PolicyRegistry (Proxy):" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+VOLR_INVOKER=$(grep "VolrInvoker (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+SCOPED_POLICY_IMPL=$(grep "ScopedPolicy (Impl)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+CLIENT_SPONSOR=$(grep "ClientSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+VOLR_SPONSOR=$(grep "VolrSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+
+# Fallback to individual log lines (from === sections)
 if [ -z "$POLICY_REGISTRY" ]; then
     POLICY_REGISTRY=$(grep "Registry Proxy:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
 if [ -z "$VOLR_INVOKER" ]; then
-    VOLR_INVOKER=$(grep "^  VolrInvoker:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+    VOLR_INVOKER=$(grep "VolrInvoker Proxy:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
 if [ -z "$SCOPED_POLICY_IMPL" ]; then
     SCOPED_POLICY_IMPL=$(grep "ScopedPolicy Impl:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)

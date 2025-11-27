@@ -28,13 +28,54 @@ contract ScopedPolicy is IPolicy {
     mapping(bytes32 => bytes32) public pairRoot;
     mapping(bytes32 => bytes32) public contractRoot; // New: Root for allowed contracts
     mapping(bytes32 => bytes32) public codeHashRoot;
+    
+    // F3 fix: Track policy finalization state (immutable policy model)
+    mapping(bytes32 => bool) public policyFinalized;
+    
+    // Phase 2-2 fix: Track policy owner for access control (first-claim model)
+    mapping(bytes32 => address) public policyOwner;
 
     event PolicySet(bytes32 indexed policyId, uint256 chainId, uint256 maxValue, uint64 maxExpiry, bool allowAll, bytes32 snapshotHash);
     event PairSet(bytes32 indexed policyId, address indexed target, bytes4 indexed selector, bool allowed, bytes32 newSnapshot);
     event ContractSet(bytes32 indexed policyId, address indexed target, bool allowed, bytes32 newSnapshot); // New event
     event CodeHashSet(bytes32 indexed policyId, address indexed target, bytes32 codeHash, bytes32 newSnapshot);
+    event PolicyFinalized(bytes32 indexed policyId, bytes32 snapshotHash);
+    event PolicyOwnerSet(bytes32 indexed policyId, address indexed owner);
+    
+    error PolicyAlreadyFinalized();
+    error PolicyNotInitialized();
+    error NotPolicyOwner();
+    error PolicyAlreadyClaimed();
+    
+    /**
+     * @notice Modifier to check policy ownership (Phase 2-2 fix)
+     * @dev First call to setPolicy claims ownership; subsequent calls require ownership
+     */
+    modifier onlyPolicyOwner(bytes32 policyId) {
+        _checkPolicyOwner(policyId);
+        _;
+    }
+    
+    function _checkPolicyOwner(bytes32 policyId) internal view {
+        if (policyOwner[policyId] != address(0) && policyOwner[policyId] != msg.sender) {
+            revert NotPolicyOwner();
+        }
+    }
 
-    function setPolicy(bytes32 policyId, uint256 chainId, uint256 maxValue, uint64 maxExpiry, bool allowAll) external {
+    /**
+     * @notice Set policy configuration (F3 fix: only allowed before finalization)
+     * @dev Once finalized, policy cannot be modified. Create new policyId for changes.
+     *      Phase 2-2 fix: First caller becomes policy owner (first-claim model)
+     */
+    function setPolicy(bytes32 policyId, uint256 chainId, uint256 maxValue, uint64 maxExpiry, bool allowAll) external onlyPolicyOwner(policyId) {
+        if (policyFinalized[policyId]) revert PolicyAlreadyFinalized();
+        
+        // Phase 2-2 fix: Claim ownership on first setPolicy call
+        if (policyOwner[policyId] == address(0)) {
+            policyOwner[policyId] = msg.sender;
+            emit PolicyOwnerSet(policyId, msg.sender);
+        }
+        
         policies[policyId].chainId = chainId;
         policies[policyId].maxValue = maxValue;
         policies[policyId].maxExpiry = maxExpiry;
@@ -47,7 +88,14 @@ contract ScopedPolicy is IPolicy {
         emit PolicySet(policyId, chainId, maxValue, maxExpiry, allowAll, policies[policyId].snapshotHash);
     }
 
-    function setPair(bytes32 policyId, address target, bytes4 selector, bool allowed) external {
+    /**
+     * @notice Set allowed pair (F3 fix: only allowed before finalization)
+     * @dev Phase 2-2 fix: Only policy owner can modify
+     */
+    function setPair(bytes32 policyId, address target, bytes4 selector, bool allowed) external onlyPolicyOwner(policyId) {
+        if (policyFinalized[policyId]) revert PolicyAlreadyFinalized();
+        if (policyOwner[policyId] == address(0)) revert PolicyNotInitialized();
+        
         allowedPair[policyId][target][selector] = allowed;
         // Incrementally update pair root (order-dependent but deterministic via event replay)
         pairRoot[policyId] = keccak256(abi.encode(pairRoot[policyId], target, selector, allowed));
@@ -55,7 +103,14 @@ contract ScopedPolicy is IPolicy {
         emit PairSet(policyId, target, selector, allowed, policies[policyId].snapshotHash);
     }
 
-    function setContract(bytes32 policyId, address target, bool allowed) external {
+    /**
+     * @notice Set allowed contract (F3 fix: only allowed before finalization)
+     * @dev Phase 2-2 fix: Only policy owner can modify
+     */
+    function setContract(bytes32 policyId, address target, bool allowed) external onlyPolicyOwner(policyId) {
+        if (policyFinalized[policyId]) revert PolicyAlreadyFinalized();
+        if (policyOwner[policyId] == address(0)) revert PolicyNotInitialized();
+        
         allowedContract[policyId][target] = allowed;
         // Incrementally update contract root
         contractRoot[policyId] = keccak256(abi.encode(contractRoot[policyId], target, allowed));
@@ -63,12 +118,32 @@ contract ScopedPolicy is IPolicy {
         emit ContractSet(policyId, target, allowed, policies[policyId].snapshotHash);
     }
 
-    function setAllowedCodeHash(bytes32 policyId, address target, bytes32 codeHash) external {
+    /**
+     * @notice Set allowed code hash (F3 fix: only allowed before finalization)
+     * @dev Phase 2-2 fix: Only policy owner can modify
+     */
+    function setAllowedCodeHash(bytes32 policyId, address target, bytes32 codeHash) external onlyPolicyOwner(policyId) {
+        if (policyFinalized[policyId]) revert PolicyAlreadyFinalized();
+        if (policyOwner[policyId] == address(0)) revert PolicyNotInitialized();
+        
         allowedCodeHash[policyId][target] = codeHash;
         // Incrementally update codehash root
         codeHashRoot[policyId] = keccak256(abi.encode(codeHashRoot[policyId], target, codeHash));
         policies[policyId].snapshotHash = _computeSnapshot(policyId);
         emit CodeHashSet(policyId, target, codeHash, policies[policyId].snapshotHash);
+    }
+    
+    /**
+     * @notice Finalize policy to make it immutable (F3 fix)
+     * @dev Once finalized, no further modifications are allowed
+     *      Phase 2-2 fix: Only policy owner can finalize
+     */
+    function finalizePolicy(bytes32 policyId) external onlyPolicyOwner(policyId) {
+        if (policyOwner[policyId] == address(0)) revert PolicyNotInitialized();
+        if (policyFinalized[policyId]) revert PolicyAlreadyFinalized();
+        
+        policyFinalized[policyId] = true;
+        emit PolicyFinalized(policyId, policies[policyId].snapshotHash);
     }
 
     function validate(Types.SessionAuth calldata auth, Types.Call[] calldata calls)
@@ -83,10 +158,13 @@ contract ScopedPolicy is IPolicy {
         // Check expiry if limit set (maxExpiry != type(uint64).max)
         if (cfg.maxExpiry != type(uint64).max && auth.expiresAt > block.timestamp + cfg.maxExpiry) return (false, 4);
 
+        // Phase 2-3 fix: When gasLimit=0, treat as gasLimitMax to prevent bypass
         if (auth.totalGasCap > 0) {
             uint256 totalGasLimit = 0;
             for (uint256 i = 0; i < calls.length; i++) {
-                if (calls[i].gasLimit > 0) totalGasLimit += calls[i].gasLimit;
+                // If gasLimit is 0, use gasLimitMax as the effective gas (Option A)
+                uint256 effectiveGas = calls[i].gasLimit > 0 ? calls[i].gasLimit : auth.gasLimitMax;
+                totalGasLimit += effectiveGas;
             }
             if (totalGasLimit > auth.totalGasCap) return (false, 9);
         }

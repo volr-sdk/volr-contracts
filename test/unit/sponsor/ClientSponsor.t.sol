@@ -190,6 +190,11 @@ contract ClientSponsorTest is Test {
     // ============ Failure Recording ============
     
     function test_RecordFailure_IncrementsCounters() public {
+        // Set invoker for access control
+        address invoker = address(0x8888);
+        sponsor.setInvoker(invoker);
+        
+        vm.prank(invoker);
         sponsor.recordFailure(client, policyId);
         
         (uint256 consecutive, uint256 window, ) = sponsor.failureCounters(client, policyId);
@@ -198,9 +203,15 @@ contract ClientSponsorTest is Test {
     }
     
     function test_RecordFailure_MultipleTimes() public {
+        // Set invoker for access control
+        address invoker = address(0x8888);
+        sponsor.setInvoker(invoker);
+        
+        vm.startPrank(invoker);
         sponsor.recordFailure(client, policyId);
         sponsor.recordFailure(client, policyId);
         sponsor.recordFailure(client, policyId);
+        vm.stopPrank();
         
         (uint256 consecutive, uint256 window, ) = sponsor.failureCounters(client, policyId);
         assertEq(consecutive, 3);
@@ -208,18 +219,27 @@ contract ClientSponsorTest is Test {
     }
     
     function test_RecordFailureAndCharge_ChargesFee() public {
+        // Set invoker for access control
+        address invoker = address(0x8888);
+        sponsor.setInvoker(invoker);
+        
         vm.deal(address(sponsor), 10 ether);
         sponsor.setBudget(client, 10 ether);
         
         address user = address(0x3333);
         uint256 attemptFee = 0.01 ether;
         
+        vm.prank(invoker);
         sponsor.recordFailureAndCharge(client, user, policyId, attemptFee);
         
         assertEq(sponsor.getBudget(client), 10 ether - attemptFee);
     }
     
     function test_RecordFailureAndCharge_EmitsEvent() public {
+        // Set invoker for access control
+        address invoker = address(0x8888);
+        sponsor.setInvoker(invoker);
+        
         vm.deal(address(sponsor), 10 ether);
         sponsor.setBudget(client, 10 ether);
         
@@ -229,6 +249,7 @@ contract ClientSponsorTest is Test {
         vm.expectEmit(true, true, true, true);
         emit ClientSponsor.AttemptFeeCharged(client, user, attemptFee, policyId, block.timestamp);
         
+        vm.prank(invoker);
         sponsor.recordFailureAndCharge(client, user, policyId, attemptFee);
     }
     
@@ -244,5 +265,71 @@ contract ClientSponsorTest is Test {
         uint256 today = block.timestamp / 1 days;
         assertEq(sponsor.getDailyUsage(client, today), 0);
     }
+    
+    // ============ Phase 2-5: Fail-Open Refund ============
+    
+    function test_HandleSponsorship_RefundFailed_EmitsEvent() public {
+        // Setup
+        address invokerAddr = address(0x8888);
+        sponsor.setInvoker(invokerAddr);
+        
+        // Use a contract that rejects ETH as the relayer
+        RejectingRelayer rejectingRelayer = new RejectingRelayer();
+        
+        // Fund sponsor and initialize policy (this sets policyToClient mapping)
+        vm.deal(address(sponsor), 10 ether);
+        sponsor.depositAndInitialize{value: 10 ether}(client, policyId);
+        
+        address user = address(0x3333);
+        uint256 gasUsed = 0.01 ether; // In wei
+        
+        // Expect RefundFailed event
+        vm.expectEmit(true, false, false, true);
+        emit ClientSponsor.RefundFailed(address(rejectingRelayer), gasUsed);
+        
+        // Call handleSponsorship with rejecting relayer
+        vm.prank(invokerAddr);
+        sponsor.handleSponsorship(user, gasUsed, policyId, address(rejectingRelayer));
+        
+        // Budget should still be deducted even though refund failed
+        assertEq(sponsor.getBudget(client), 10 ether - gasUsed);
+    }
+    
+    function test_HandleSponsorship_RefundSuccess_NoEvent() public {
+        // Setup
+        address invokerAddr = address(0x8888);
+        sponsor.setInvoker(invokerAddr);
+        
+        // Use a contract that accepts ETH as the relayer
+        AcceptingRelayer acceptingRelayer = new AcceptingRelayer();
+        
+        // Fund sponsor and initialize policy (this sets policyToClient mapping)
+        vm.deal(address(sponsor), 10 ether);
+        sponsor.depositAndInitialize{value: 10 ether}(client, policyId);
+        
+        address user = address(0x3333);
+        uint256 gasUsed = 0.01 ether; // In wei
+        
+        // Call handleSponsorship with accepting relayer
+        vm.prank(invokerAddr);
+        sponsor.handleSponsorship(user, gasUsed, policyId, address(acceptingRelayer));
+        
+        // Budget should be deducted
+        assertEq(sponsor.getBudget(client), 10 ether - gasUsed);
+        // Relayer should have received the refund
+        assertEq(address(acceptingRelayer).balance, gasUsed);
+    }
+}
+
+// Helper contract that rejects ETH transfers
+contract RejectingRelayer {
+    receive() external payable {
+        revert("I reject ETH");
+    }
+}
+
+// Helper contract that accepts ETH transfers
+contract AcceptingRelayer {
+    receive() external payable {}
 }
 

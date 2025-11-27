@@ -17,12 +17,14 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
     address public timelock;
     address public multisig;
     address private _owner;
+    mapping(address => bool) public authorizedCallers; // F2 fix: allowlist for callers
     
     /// @notice Storage gap for future upgrades
     uint256[50] private __gap;
     
     error Unauthorized();
     error ZeroAddress();
+    error NotAuthorizedCaller();
     
     event SubsidyPaid(
         address indexed client,
@@ -36,6 +38,7 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
     event MultisigSet(address indexed multisig);
     event UpgradeInitiated(address indexed oldImpl, address indexed newImpl, uint256 eta);
     event UpgradeExecuted(address indexed oldImpl, address indexed newImpl, uint256 timestamp);
+    event AuthorizedCallerSet(address indexed caller, bool allowed);
     
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -55,16 +58,36 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
      * @notice Modifier to restrict access to owner
      */
     modifier onlyOwner() {
-        require(msg.sender == _owner, "Not owner");
+        _checkOwner();
         _;
+    }
+    
+    function _checkOwner() internal view {
+        require(msg.sender == _owner, "Not owner");
     }
     
     /**
      * @notice Modifier to restrict access to timelock or multisig
      */
     modifier onlyTimelockOrMultisig() {
-        if (msg.sender != timelock && msg.sender != multisig) revert Unauthorized();
+        _checkTimelockOrMultisig();
         _;
+    }
+    
+    function _checkTimelockOrMultisig() internal view {
+        if (msg.sender != timelock && msg.sender != multisig) revert Unauthorized();
+    }
+    
+    /**
+     * @notice Modifier to restrict access to authorized callers only (F2 fix)
+     */
+    modifier onlyAuthorizedCaller() {
+        _checkAuthorizedCaller();
+        _;
+    }
+    
+    function _checkAuthorizedCaller() internal view {
+        if (!authorizedCallers[msg.sender]) revert NotAuthorizedCaller();
     }
     
     /**
@@ -98,7 +121,17 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
     }
     
     /**
-     * @notice Compensate client with subsidy
+     * @notice Set authorized caller (F2 fix)
+     * @param caller Caller address (e.g., ClientSponsor)
+     * @param allowed Whether the caller is authorized
+     */
+    function setAuthorizedCaller(address caller, bool allowed) external onlyOwner {
+        authorizedCallers[caller] = allowed;
+        emit AuthorizedCallerSet(caller, allowed);
+    }
+    
+    /**
+     * @notice Compensate client with subsidy (F2 fix: onlyAuthorizedCaller)
      * @param client Client address
      * @param gasUsed Gas used
      * @param policyId Policy ID
@@ -107,7 +140,7 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
         address client,
         uint256 gasUsed,
         bytes32 policyId
-    ) external override nonReentrant {
+    ) external override nonReentrant onlyAuthorizedCaller {
         uint256 rate = subsidyRates[policyId];
         
         if (rate == 0) {
@@ -129,11 +162,13 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
     
     /**
      * @notice Handle sponsorship (not used in VolrSponsor)
+     * @dev Required by ISponsor interface but not implemented here
      */
     function handleSponsorship(
         address,
         uint256,
-        bytes32
+        bytes32,
+        address
     ) external pure override {
         revert("Not implemented");
     }
@@ -150,6 +185,8 @@ contract VolrSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradeabl
      * @param newImplementation New implementation address
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
+        // Phase 2-6 fix: Verify newImplementation is a contract (not EOA)
+        require(newImplementation.code.length > 0, "Implementation is not a contract");
         address oldImpl = ERC1967Utils.getImplementation();
         emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
     }

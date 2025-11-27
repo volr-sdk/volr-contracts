@@ -42,8 +42,10 @@ contract VolrInvoker is
         mapping(bytes32 => uint64) channelNonces;
     }
     
-    // keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant STORAGE_SLOT = 0x8a0c9d8ec1d9f8b4a1c2e3f4d5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f300;
+    /// @dev ERC-7201 compliant storage slot calculation (Phase 2-7 fix)
+    /// Formula: keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
+    /// Run: forge test --match-test test_CalculateSlotDirectly -vvv to verify
+    /// Note: Value must be a literal for inline assembly compatibility
     
     /// @notice Storage gap for future upgrades
     uint256[50] private __gap;
@@ -128,15 +130,23 @@ contract VolrInvoker is
     // ============ Modifiers ============
     
     modifier onlyOwner() {
-        InvokerStorage storage $ = _getStorage();
-        require(msg.sender == $.owner, "Not owner");
+        _checkOwner();
         _;
     }
     
+    function _checkOwner() internal view {
+        InvokerStorage storage $ = _getStorage();
+        require(msg.sender == $.owner, "Not owner");
+    }
+    
     modifier onlyTimelockOrMultisig() {
+        _checkTimelockOrMultisig();
+        _;
+    }
+    
+    function _checkTimelockOrMultisig() internal view {
         InvokerStorage storage $ = _getStorage();
         if (msg.sender != $.timelock && msg.sender != $.multisig) revert Unauthorized();
-        _;
     }
     
     // ============ Admin Functions ============
@@ -165,6 +175,10 @@ contract VolrInvoker is
     
     // ============ Public Entrypoints ============
 
+    /**
+     * @notice Execute sponsored batch with gas limit enforcement (F4 fix)
+     * @dev Relayer is msg.sender for gas refund (F1 fix: explicit relayer)
+     */
     function sponsoredExecute(
         Types.Call[] calldata calls,
         Types.SessionAuth calldata auth,
@@ -179,14 +193,22 @@ contract VolrInvoker is
         _validateSponsorVoucher(auth, voucher, sponsorSig);
         _enforceNonce(_channelKey(signer, auth.policyId, auth.sessionId), auth.nonce);
 
-        bool success = _execute(calls, revertOnFail);
+        // F4 fix: Pass gasLimitMax to enforce per-call gas limits
+        bool success = _execute(calls, revertOnFail, auth.gasLimitMax);
         emit SponsoredExecuted(signer, voucher.sponsor, auth.policyId, callsHash, auth.policySnapshotHash, success);
 
-        uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
+        // Phase 2-1 fix: Convert gas units to wei using tx.gasprice
+        uint256 gasUnits = startGas - gasleft() + 21000; // Approximate overhead in gas units
+        uint256 gasCostWei = gasUnits * tx.gasprice;
         InvokerStorage storage $ = _getStorage();
-        $.sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+        // F1 fix: Pass msg.sender as explicit relayer instead of using tx.origin
+        $.sponsor.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
     }
 
+    /**
+     * @notice Execute batch with gas limit enforcement (F4 fix)
+     * @dev Relayer is msg.sender for gas refund (F1 fix: explicit relayer)
+     */
     function executeBatch(
         Types.Call[] calldata calls,
         Types.SessionAuth calldata auth,
@@ -198,12 +220,16 @@ contract VolrInvoker is
         address signer = _validateAndRecoverSigner(calls, auth, revertOnFail, callsHash, sessionSig);
         _enforceNonce(_channelKey(signer, auth.policyId, auth.sessionId), auth.nonce);
 
-        bool success = _execute(calls, revertOnFail);
+        // F4 fix: Pass gasLimitMax to enforce per-call gas limits
+        bool success = _execute(calls, revertOnFail, auth.gasLimitMax);
         emit BatchExecuted(signer, auth.policyId, callsHash, auth.policySnapshotHash, success);
 
-        uint256 gasUsed = startGas - gasleft() + 21000; // Approximate overhead
+        // Phase 2-1 fix: Convert gas units to wei using tx.gasprice
+        uint256 gasUnits = startGas - gasleft() + 21000; // Approximate overhead in gas units
+        uint256 gasCostWei = gasUnits * tx.gasprice;
         InvokerStorage storage $ = _getStorage();
-        $.sponsor.handleSponsorship(signer, gasUsed, auth.policyId);
+        // F1 fix: Pass msg.sender as explicit relayer instead of using tx.origin
+        $.sponsor.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
     }
     
     // ============ ERC721 Receiver ============
@@ -453,11 +479,18 @@ contract VolrInvoker is
         return Signature.recoverSigner(digest, v, r, s);
     }
 
+    /**
+     * @notice Validate sponsor voucher with proper domain binding (F5 fix)
+     * @dev Phase 2-4: voucher.sponsor is the backend EOA that signs the voucher.
+     *      The actual gas cost is deducted from the client's budget based on policyId,
+     *      not from voucher.sponsor. This is by design - the sponsor signature authorizes
+     *      the gas terms, while policyId determines the funding source.
+     */
     function _validateSponsorVoucher(
         Types.SessionAuth calldata auth,
         SponsorVoucher calldata voucher,
         bytes calldata sponsorSig
-    ) internal pure {
+    ) internal view {
         require(voucher.sponsor != address(0), "no sponsor");
         require(voucher.policyId == auth.policyId, "policyId mismatch");
         require(voucher.policySnapshotHash == auth.policySnapshotHash, "snapshot mismatch");
@@ -468,8 +501,10 @@ contract VolrInvoker is
         require(voucher.maxFeePerGas == auth.maxFeePerGas, "maxFeePerGas mismatch");
         require(voucher.maxPriorityFeePerGas == auth.maxPriorityFeePerGas, "maxPrioFee mismatch");
         require(voucher.totalGasCap == auth.totalGasCap, "totalGasCap mismatch");
-        // Verify sponsorSig over voucher digest
+        // F5 fix: Verify sponsorSig over voucher digest with proper domain binding
         bytes32 digest = EIP712.hashSponsorVoucher(
+            auth.chainId,           // F5 fix: Add chainId for domain binding
+            address(this),          // F5 fix: Add verifyingContract for domain binding
             voucher.sponsor,
             voucher.policyId,
             voucher.policySnapshotHash,
@@ -504,14 +539,36 @@ contract VolrInvoker is
         $.channelNonces[channel] = nonce;
     }
 
-    function _execute(Types.Call[] calldata calls, bool revertOnFail) internal returns (bool) {
+    /**
+     * @notice Execute calls with gas limit enforcement (F4 fix) and EOA support (F8 fix)
+     * @param calls Array of calls to execute
+     * @param revertOnFail Whether to revert on any call failure
+     * @param gasLimitMax Maximum gas limit per call (from auth.gasLimitMax)
+     */
+    function _execute(
+        Types.Call[] calldata calls, 
+        bool revertOnFail,
+        uint256 gasLimitMax
+    ) internal returns (bool) {
         bool allSuccess = true;
         for (uint256 i = 0; i < calls.length; i++) {
             Types.Call memory call = calls[i];
-            require(call.target.code.length > 0, "Target is not a contract");
+            
+            // F8 fix: Allow EOA calls (pure ETH transfers) when data is empty
+            // Only require contract code when there's call data
+            if (call.data.length > 0) {
+                require(call.target.code.length > 0, "Target is not a contract");
+            }
+            
+            // F4 fix: Enforce gas limit - use call.gasLimit if set, otherwise use gasLimitMax
+            // Never default to gasleft() which could exceed signed limits
+            uint256 callGas = call.gasLimit > 0 ? call.gasLimit : gasLimitMax;
+            require(callGas > 0, "No gas limit specified");
+            require(callGas <= gasLimitMax, "Call gas exceeds gasLimitMax");
+            
             (bool success, bytes memory ret) = call.target.call{
                 value: call.value,
-                gas: call.gasLimit > 0 ? call.gasLimit : gasleft()
+                gas: callGas
             }(call.data);
             if (!success) {
                 allSuccess = false;
@@ -532,8 +589,11 @@ contract VolrInvoker is
     // ============ Storage Access ============
     
     function _getStorage() private pure returns (InvokerStorage storage $) {
+        // ERC-7201 storage slot (must be literal for inline assembly)
+        // Formula: keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
+        // Verified with: forge test --match-test test_CalculateSlotDirectly -vvv
         assembly {
-            $.slot := STORAGE_SLOT
+            $.slot := 0xa900be636ad1fed348d6a54f9d39c0029018b9fabffba4b03052219bf0b45500
         }
     }
     
@@ -544,6 +604,8 @@ contract VolrInvoker is
      * @param newImplementation New implementation address
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
+        // Phase 2-6 fix: Verify newImplementation is a contract (not EOA)
+        require(newImplementation.code.length > 0, "Implementation is not a contract");
         address oldImpl = ERC1967Utils.getImplementation();
         emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
     }

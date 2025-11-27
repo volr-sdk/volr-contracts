@@ -10,7 +10,7 @@ import {EIP712} from "../../src/libraries/EIP712.sol";
  * @notice Helper library for generating EIP-712 signatures in tests
  */
 library SignatureHelper {
-    Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     
     /**
      * @notice Sign a session auth for executeBatch
@@ -48,13 +48,15 @@ library SignatureHelper {
             callsHash
         );
         
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
+        (uint8 v, bytes32 r, bytes32 s) = VM.sign(privateKey, digest);
         signature = abi.encodePacked(r, s, v);
     }
     
     /**
-     * @notice Sign a sponsor voucher
+     * @notice Sign a sponsor voucher (F5 fix: with domain binding)
      * @param privateKey Sponsor's private key
+     * @param chainId Chain ID for domain binding
+     * @param verifyingContract Verifying contract for domain binding (Invoker)
      * @param sponsor Sponsor address
      * @param policyId Policy ID
      * @param policySnapshotHash Policy snapshot hash
@@ -69,6 +71,8 @@ library SignatureHelper {
      */
     function signSponsorVoucher(
         uint256 privateKey,
+        uint256 chainId,
+        address verifyingContract,
         address sponsor,
         bytes32 policyId,
         bytes32 policySnapshotHash,
@@ -81,6 +85,8 @@ library SignatureHelper {
         uint256 totalGasCap
     ) internal pure returns (bytes memory signature) {
         bytes32 digest = EIP712.hashSponsorVoucher(
+            chainId,
+            verifyingContract,
             sponsor,
             policyId,
             policySnapshotHash,
@@ -93,7 +99,7 @@ library SignatureHelper {
             totalGasCap
         );
         
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
+        (uint8 v, bytes32 r, bytes32 s) = VM.sign(privateKey, digest);
         signature = abi.encodePacked(r, s, v);
     }
     

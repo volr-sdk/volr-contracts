@@ -24,6 +24,8 @@ contract VolrSponsorTest is Test {
         sponsor = TestHelpers.deployVolrSponsor(owner);
         sponsor.setTimelock(owner);
         sponsor.setMultisig(owner);
+        // Set this test contract as authorized caller for compensateClient
+        sponsor.setAuthorizedCaller(address(this), true);
     }
     
     // ============ Subsidy Rate ============
@@ -84,7 +86,7 @@ contract VolrSponsorTest is Test {
         sponsor.setSubsidyRate(policyId, 2000);
         
         uint256 gasUsed = 1 ether;
-        uint256 expectedSubsidy = (gasUsed * 2000) / 10000;
+        // expectedSubsidy = (gasUsed * 2000) / 10000 = 0.2 ether
         
         vm.expectEmit(true, true, false, true);
         emit VolrSponsor.SubsidyPaid(client, gasUsed, policyId, 2000, block.timestamp);

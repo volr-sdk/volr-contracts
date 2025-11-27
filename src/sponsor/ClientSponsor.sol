@@ -5,7 +5,6 @@ import {ISponsor} from "../interfaces/ISponsor.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 
 /**
@@ -44,6 +43,7 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     address public timelock;
     address public multisig;
     address private _owner;
+    address public invoker; // Authorized invoker address (F1 fix)
     
     // Anti-grief configs
     uint256 public minGasPerTx;           // 최소 가스 사용량(wei 단위 또는 gasUsed 포인트)
@@ -58,6 +58,7 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     error Unauthorized();
     error NotThroughProxy();
     error ZeroAddress();
+    error NotInvoker();
     
     event SponsorshipUsed(
         address indexed client,
@@ -77,6 +78,8 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     event UpgradeExecuted(address indexed oldImpl, address indexed newImpl, uint256 timestamp);
     event AntiGriefSet(uint256 minGasPerTx, uint256 userRpsLimit, uint256 userRpsWindowSeconds);
     event AttemptFeeCharged(address indexed client, address indexed user, uint256 amount, bytes32 indexed policyId, uint256 timestamp);
+    event InvokerSet(address indexed invoker);
+    event RefundFailed(address indexed relayer, uint256 amount); // Phase 2-5: Fail-open refund event
     
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -96,16 +99,36 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
      * @notice Modifier to restrict access to owner
      */
     modifier onlyOwner() {
-        require(msg.sender == _owner, "Not owner");
+        _checkOwner();
         _;
+    }
+    
+    function _checkOwner() internal view {
+        require(msg.sender == _owner, "Not owner");
     }
     
     /**
      * @notice Modifier to restrict access to timelock or multisig
      */
     modifier onlyTimelockOrMultisig() {
-        if (msg.sender != timelock && msg.sender != multisig) revert Unauthorized();
+        _checkTimelockOrMultisig();
         _;
+    }
+    
+    function _checkTimelockOrMultisig() internal view {
+        if (msg.sender != timelock && msg.sender != multisig) revert Unauthorized();
+    }
+    
+    /**
+     * @notice Modifier to restrict access to invoker only (F1 fix)
+     */
+    modifier onlyInvoker() {
+        _checkInvoker();
+        _;
+    }
+    
+    function _checkInvoker() internal view {
+        if (msg.sender != invoker) revert NotInvoker();
     }
     
     /**
@@ -134,6 +157,16 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
      */
     function setVolrSponsor(address _volrSponsor) external onlyOwner {
         volrSponsor = _volrSponsor;
+    }
+    
+    /**
+     * @notice Set invoker address (F1 fix)
+     * @param _invoker Invoker address
+     */
+    function setInvoker(address _invoker) external onlyOwner {
+        if (_invoker == address(0)) revert ZeroAddress();
+        invoker = _invoker;
+        emit InvokerSet(_invoker);
     }
     
     /**
@@ -238,16 +271,20 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     /**
-     * @notice Handle sponsorship request
+     * @notice Handle sponsorship request (F1 fix: onlyInvoker + explicit relayer)
      * @param user User address
      * @param gasUsed Gas used
      * @param policyId Policy ID
+     * @param relayer Address to receive gas refund (replaces tx.origin)
      */
     function handleSponsorship(
         address user,
         uint256 gasUsed,
-        bytes32 policyId
-    ) external override nonReentrant {
+        bytes32 policyId,
+        address relayer
+    ) external override nonReentrant onlyInvoker {
+        require(relayer != address(0), "Invalid relayer");
+        
         address client = policyToClient[policyId];
         require(client != address(0), "Policy not mapped to client");
 
@@ -308,19 +345,24 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
             ISponsor(volrSponsor).compensateClient(client, gasUsed, policyId);
         }
 
-        // Refund Relayer (tx.origin) with ETH from client's budget
-        // Since budget is already deducted, we just transfer ETH to origin
+        // Refund Relayer with ETH from client's budget (F1 fix: explicit relayer, not tx.origin)
+        // Since budget is already deducted, we just transfer ETH to relayer
         // Note: This assumes ClientSponsor holds enough ETH (budget tracks ETH)
-        (bool success, ) = tx.origin.call{value: gasUsed}("");
-        require(success, "Refund failed");
+        // Phase 2-5 fix: Fail-open - emit event on failure instead of reverting
+        // This prevents malicious relayers from griefing by rejecting refunds
+        (bool success, ) = relayer.call{value: gasUsed}("");
+        if (!success) {
+            emit RefundFailed(relayer, gasUsed);
+            // Transaction continues - relayer's responsibility to accept ETH
+        }
     }
     
     /**
-     * @notice Record failure for circuit breaker
+     * @notice Record failure for circuit breaker (F1 fix: onlyInvoker)
      * @param client Client address
      * @param policyId Policy ID
      */
-    function recordFailure(address client, bytes32 policyId) external {
+    function recordFailure(address client, bytes32 policyId) external onlyInvoker {
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;
@@ -328,14 +370,14 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     /**
-     * @notice Record failure and optionally charge attempt fee
+     * @notice Record failure and optionally charge attempt fee (F1 fix: onlyInvoker)
      */
     function recordFailureAndCharge(
         address client,
         address user,
         bytes32 policyId,
         uint256 attemptFee
-    ) external {
+    ) external onlyInvoker {
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;
@@ -384,6 +426,8 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
      * @param newImplementation New implementation address
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
+        // Phase 2-6 fix: Verify newImplementation is a contract (not EOA)
+        require(newImplementation.code.length > 0, "Implementation is not a contract");
         address oldImpl = ERC1967Utils.getImplementation();
         emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
     }

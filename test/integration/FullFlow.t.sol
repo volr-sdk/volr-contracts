@@ -32,6 +32,9 @@ contract FullFlowTest is Test {
     bytes32 public policyId;
     bytes32 public policySnapshotHash;
     
+    // Allow this contract to receive ETH (for gas refunds)
+    receive() external payable {}
+    
     function setUp() public {
         owner = address(this);
         client = address(0x1111);
@@ -64,10 +67,13 @@ contract FullFlowTest is Test {
         clientSponsor.setTimelock(owner);
         clientSponsor.setMultisig(owner);
         clientSponsor.setVolrSponsor(address(volrSponsor));
+        clientSponsor.setInvoker(address(invoker)); // Set invoker for access control
         
         volrSponsor.setTimelock(owner);
         volrSponsor.setMultisig(owner);
         volrSponsor.setSubsidyRate(policyId, 2000); // 20% subsidy
+        volrSponsor.setAuthorizedCaller(address(invoker), true); // Authorize invoker
+        volrSponsor.setAuthorizedCaller(address(clientSponsor), true); // Authorize clientSponsor for compensateClient
         
         // Fund sponsors
         vm.deal(address(clientSponsor), 100 ether);
@@ -106,12 +112,13 @@ contract FullFlowTest is Test {
         
         uint256 clientBudgetBefore = clientSponsor.getBudget(client);
         
-        // Act
+        // Act - Set tx.gasprice to simulate real transaction (Phase 2-1 fix uses tx.gasprice)
+        vm.txGasPrice(1 gwei);
         invoker.executeBatch(calls, auth, false, callsHash, sig);
         
         // Assert
         assertEq(target.counter(), 1);
-        // Budget should be reduced (gas was used)
+        // Budget should be reduced (gas was used, converted to wei via tx.gasprice)
         assertLt(clientSponsor.getBudget(client), clientBudgetBefore);
     }
     
