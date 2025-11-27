@@ -45,8 +45,6 @@ contract ExecuteBatchTest is Test {
         registry.register(policyId, address(policy), "test-policy");
         
         invoker = TestHelpers.deployVolrInvoker(owner, address(registry), address(mockSponsor));
-        invoker.setTimelock(owner);
-        invoker.setMultisig(owner);
         
         // Configure policy with allowAll=true for simplicity
         policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);

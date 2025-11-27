@@ -54,10 +54,8 @@ contract FullFlowTest is Test {
         registry.setMultisig(owner);
         registry.register(policyId, address(policy), "test-policy");
         
-        // Deploy invoker with client sponsor
+        // Deploy invoker with client sponsor (no admin functions needed - stateless)
         invoker = TestHelpers.deployVolrInvoker(owner, address(registry), address(clientSponsor));
-        invoker.setTimelock(owner);
-        invoker.setMultisig(owner);
         
         // Configure policy
         policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);

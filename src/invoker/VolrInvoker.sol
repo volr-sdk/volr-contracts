@@ -8,47 +8,54 @@ import {Types} from "../libraries/Types.sol";
 import {EIP712} from "../libraries/EIP712.sol";
 import {Signature} from "../libraries/Signature.sol";
 import {CallValidator} from "../libraries/CallValidator.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
-import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 
 /**
  * @title VolrInvoker
- * @notice ERC-7702 compatible invoker with UUPS upgradeability and token receiver support
+ * @notice ERC-7702 compatible invoker with token receiver support
  * @dev Uses PolicyRegistry for strategy-based policy lookup
  *      Implements IERC721Receiver and IERC1155Receiver for safe token transfers
+ * 
+ * IMPORTANT: This contract is NOT upgradeable. For EIP-7702:
+ * - EOA delegates to this contract's bytecode directly
+ * - No proxy pattern (EOA's storage is empty, proxy slots don't work)
+ * - Upgrade = deploy new contract + update backend invokerAddress
+ * 
+ * All state (registry, sponsor) is immutable (stored in bytecode).
+ * When a user's EOA delegatecalls to this contract, immutable values
+ * are correctly accessible from the bytecode.
  */
 contract VolrInvoker is 
-    Initializable, 
-    UUPSUpgradeable, 
     ReentrancyGuard,
     IERC721Receiver,
     IERC1155Receiver
 {
-    // ============ ERC-7201 Storage ============
+    // ============ Immutable Variables (EIP-7702 Compatible) ============
     
-    /// @custom:storage-location erc7201:volr.VolrInvoker.v1
-    struct InvokerStorage {
-        IPolicyRegistry registry;
-        ISponsor sponsor;
-        address timelock;
-        address multisig;
-        address owner;
-    // Single keyed nonce channel: keccak256(user, policyId, sessionId) -> last seq
-        mapping(bytes32 => uint64) channelNonces;
-    }
+    /// @notice PolicyRegistry address - immutable for EIP-7702 compatibility
+    /// @dev Stored in bytecode, not storage, so accessible during delegatecall
+    IPolicyRegistry public immutable REGISTRY;
     
-    /// @dev ERC-7201 compliant storage slot calculation (Phase 2-7 fix)
-    /// Formula: keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
-    /// Run: forge test --match-test test_CalculateSlotDirectly -vvv to verify
-    /// Note: Value must be a literal for inline assembly compatibility
+    /// @notice Sponsor address - immutable for EIP-7702 compatibility
+    /// @dev Stored in bytecode, not storage, so accessible during delegatecall
+    ISponsor public immutable SPONSOR;
     
-    /// @notice Storage gap for future upgrades
-    uint256[50] private __gap;
+    // ============ Note on Storage ============
+    // 
+    // EIP-7702 Context: When EOA delegatecalls to this contract:
+    // - Bytecode (including immutables) comes from this contract
+    // - Storage comes from the EOA (which is empty)
+    // 
+    // Therefore:
+    // - REGISTRY and SPONSOR work (immutable = in bytecode)
+    // - channelNonces is stored in EOA's storage (per-user nonce tracking)
+    // - No owner/timelock/multisig needed (no upgrades, no admin functions)
+    
+    /// @notice Nonce tracking per channel (stored in EOA's storage during delegatecall)
+    mapping(bytes32 => uint64) public channelNonces;
     
     // ============ Structs ============
 
@@ -71,7 +78,6 @@ contract VolrInvoker is
     error PolicyViolation(uint256 code);
     error InvalidNonce();
     error ExpiredSession();
-    error Unauthorized();
     error ZeroAddress();
     
     // ============ Events ============
@@ -92,85 +98,17 @@ contract VolrInvoker is
         bytes32 policySnapshotHash,
         bool success
     );
-
-    event TimelockSet(address indexed timelock);
-    event MultisigSet(address indexed multisig);
-    event UpgradeInitiated(address indexed oldImpl, address indexed newImpl, uint256 eta);
     
     // ============ Constructor ============
     
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
-    
-    // ============ Initializer ============
-    
-    /**
-     * @notice Initialize the contract
-     * @param _registry PolicyRegistry address
-     * @param _sponsor Sponsor address
-     * @param _owner Owner address for upgrade authorization
-     */
-    function initialize(
-        address _registry,
-        address _sponsor,
-        address _owner
-    ) external initializer {
-        if (_registry == address(0) || _sponsor == address(0) || _owner == address(0)) {
+    /// @param _registry PolicyRegistry address (immutable)
+    /// @param _sponsor Sponsor address (immutable)
+    constructor(address _registry, address _sponsor) {
+        if (_registry == address(0) || _sponsor == address(0)) {
             revert ZeroAddress();
         }
-        
-        InvokerStorage storage $ = _getStorage();
-        $.registry = IPolicyRegistry(_registry);
-        $.sponsor = ISponsor(_sponsor);
-        $.owner = _owner;
-    }
-    
-    // ============ Modifiers ============
-    
-    modifier onlyOwner() {
-        _checkOwner();
-        _;
-    }
-    
-    function _checkOwner() internal view {
-        InvokerStorage storage $ = _getStorage();
-        require(msg.sender == $.owner, "Not owner");
-    }
-    
-    modifier onlyTimelockOrMultisig() {
-        _checkTimelockOrMultisig();
-        _;
-    }
-    
-    function _checkTimelockOrMultisig() internal view {
-        InvokerStorage storage $ = _getStorage();
-        if (msg.sender != $.timelock && msg.sender != $.multisig) revert Unauthorized();
-    }
-    
-    // ============ Admin Functions ============
-    
-    /**
-     * @notice Set timelock address
-     * @param _timelock Timelock address
-     */
-    function setTimelock(address _timelock) external onlyOwner {
-        if (_timelock == address(0)) revert ZeroAddress();
-        InvokerStorage storage $ = _getStorage();
-        $.timelock = _timelock;
-        emit TimelockSet(_timelock);
-    }
-    
-    /**
-     * @notice Set multisig address
-     * @param _multisig Multisig address
-     */
-    function setMultisig(address _multisig) external onlyOwner {
-        if (_multisig == address(0)) revert ZeroAddress();
-        InvokerStorage storage $ = _getStorage();
-        $.multisig = _multisig;
-        emit MultisigSet(_multisig);
+        REGISTRY = IPolicyRegistry(_registry);
+        SPONSOR = ISponsor(_sponsor);
     }
     
     // ============ Public Entrypoints ============
@@ -200,9 +138,9 @@ contract VolrInvoker is
         // Phase 2-1 fix: Convert gas units to wei using tx.gasprice
         uint256 gasUnits = startGas - gasleft() + 21000; // Approximate overhead in gas units
         uint256 gasCostWei = gasUnits * tx.gasprice;
-        InvokerStorage storage $ = _getStorage();
         // F1 fix: Pass msg.sender as explicit relayer instead of using tx.origin
-        $.sponsor.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
+        // Use immutable SPONSOR for EIP-7702 compatibility
+        SPONSOR.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
     }
 
     /**
@@ -227,9 +165,9 @@ contract VolrInvoker is
         // Phase 2-1 fix: Convert gas units to wei using tx.gasprice
         uint256 gasUnits = startGas - gasleft() + 21000; // Approximate overhead in gas units
         uint256 gasCostWei = gasUnits * tx.gasprice;
-        InvokerStorage storage $ = _getStorage();
         // F1 fix: Pass msg.sender as explicit relayer instead of using tx.origin
-        $.sponsor.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
+        // Use immutable SPONSOR for EIP-7702 compatibility
+        SPONSOR.handleSponsorship(signer, gasCostWei, auth.policyId, msg.sender);
     }
     
     // ============ ERC721 Receiver ============
@@ -347,22 +285,11 @@ contract VolrInvoker is
     // ============ View Functions ============
     
     /**
-     * @notice Get the nonce for a channel
-     * @param channel Channel key
-     * @return Current nonce
-     */
-    function channelNonces(bytes32 channel) external view returns (uint64) {
-        InvokerStorage storage $ = _getStorage();
-        return $.channelNonces[channel];
-    }
-    
-    /**
      * @notice Get the registry address
      * @return Registry address
      */
     function registry() external view returns (IPolicyRegistry) {
-        InvokerStorage storage $ = _getStorage();
-        return $.registry;
+        return REGISTRY;
     }
     
     /**
@@ -370,35 +297,7 @@ contract VolrInvoker is
      * @return Sponsor address
      */
     function sponsor() external view returns (ISponsor) {
-        InvokerStorage storage $ = _getStorage();
-        return $.sponsor;
-    }
-    
-    /**
-     * @notice Get the owner address
-     * @return Owner address
-     */
-    function owner() external view returns (address) {
-        InvokerStorage storage $ = _getStorage();
-        return $.owner;
-    }
-    
-    /**
-     * @notice Get the timelock address
-     * @return Timelock address
-     */
-    function timelock() external view returns (address) {
-        InvokerStorage storage $ = _getStorage();
-        return $.timelock;
-    }
-    
-    /**
-     * @notice Get the multisig address
-     * @return Multisig address
-     */
-    function multisig() external view returns (address) {
-        InvokerStorage storage $ = _getStorage();
-        return $.multisig;
+        return SPONSOR;
     }
 
     // ============ Internal Helpers ============
@@ -520,8 +419,8 @@ contract VolrInvoker is
     }
 
     function _validatePolicy(Types.SessionAuth memory auth, Types.Call[] calldata calls) internal view {
-        InvokerStorage storage $ = _getStorage();
-        address policyAddr = $.registry.get(auth.policyId);
+        // Use immutable REGISTRY for EIP-7702 compatibility
+        address policyAddr = REGISTRY.get(auth.policyId);
         IPolicy policy = IPolicy(policyAddr);
         (bool policyOk, uint256 policyCode) = policy.validate(auth, calls);
         if (!policyOk) {
@@ -534,9 +433,8 @@ contract VolrInvoker is
     }
 
     function _enforceNonce(bytes32 channel, uint64 nonce) internal {
-        InvokerStorage storage $ = _getStorage();
-        if (nonce <= $.channelNonces[channel]) revert InvalidNonce();
-        $.channelNonces[channel] = nonce;
+        if (nonce <= channelNonces[channel]) revert InvalidNonce();
+        channelNonces[channel] = nonce;
     }
 
     /**
@@ -584,30 +482,6 @@ contract VolrInvoker is
             }
         }
         return allSuccess;
-    }
-    
-    // ============ Storage Access ============
-    
-    function _getStorage() private pure returns (InvokerStorage storage $) {
-        // ERC-7201 storage slot (must be literal for inline assembly)
-        // Formula: keccak256(abi.encode(uint256(keccak256("volr.VolrInvoker.v1")) - 1)) & ~bytes32(uint256(0xff))
-        // Verified with: forge test --match-test test_CalculateSlotDirectly -vvv
-        assembly {
-            $.slot := 0xa900be636ad1fed348d6a54f9d39c0029018b9fabffba4b03052219bf0b45500
-        }
-    }
-    
-    // ============ UUPS ============
-    
-    /**
-     * @notice Authorize upgrade (UUPS)
-     * @param newImplementation New implementation address
-     */
-    function _authorizeUpgrade(address newImplementation) internal override onlyTimelockOrMultisig {
-        // Phase 2-6 fix: Verify newImplementation is a contract (not EOA)
-        require(newImplementation.code.length > 0, "Implementation is not a contract");
-        address oldImpl = ERC1967Utils.getImplementation();
-        emit UpgradeInitiated(oldImpl, newImplementation, block.timestamp);
     }
     
     // ============ Receive ETH ============

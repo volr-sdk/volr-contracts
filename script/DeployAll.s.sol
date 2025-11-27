@@ -49,19 +49,15 @@ contract DeployAll is Script {
         ClientSponsor clientSponsor = ClientSponsor(payable(address(clientSponsorProxy)));
         console.log("ClientSponsor Proxy:", address(clientSponsor));
 
-        // 4. VolrInvoker (UUPS Proxy) - Deployed after ClientSponsor
+        // 4. VolrInvoker (Direct deployment - NO PROXY for EIP-7702)
+        // EIP-7702: EOA delegates to contract bytecode directly, not through proxy
+        // Proxy pattern doesn't work because EOA's storage is empty (no implementation slot)
         console.log("\n=== 4. VolrInvoker ===");
-        VolrInvoker invokerImpl = new VolrInvoker();
-        bytes memory invokerInit = abi.encodeWithSelector(
-            VolrInvoker.initialize.selector,
+        VolrInvoker invoker = new VolrInvoker(
             address(registry),
-            address(clientSponsor),
-            deployer
+            address(clientSponsor)
         );
-        ERC1967Proxy invokerProxy = new ERC1967Proxy(address(invokerImpl), invokerInit);
-        VolrInvoker invoker = VolrInvoker(payable(address(invokerProxy)));
-        console.log("VolrInvoker Proxy:", address(invoker));
-        console.log("VolrInvoker Impl :", address(invokerImpl));
+        console.log("VolrInvoker:", address(invoker));
 
         // 5. VolrSponsor (UUPS Proxy)
         console.log("\n=== 5. VolrSponsor ===");
@@ -74,11 +70,11 @@ contract DeployAll is Script {
         VolrSponsor volrSponsor = VolrSponsor(payable(address(volrSponsorProxy)));
         console.log("VolrSponsor Proxy:", address(volrSponsor));
 
-        // 6. Configure Invoker governance
-        console.log("\n=== 6. Configure Invoker ===");
-        invoker.setTimelock(deployer);
-        invoker.setMultisig(deployer);
-        console.log("Invoker timelock/multisig set to deployer");
+        // 6. VolrInvoker has no admin functions (stateless, immutable references)
+        console.log("\n=== 6. VolrInvoker Configuration ===");
+        console.log("VolrInvoker is stateless - no admin configuration needed");
+        console.log("Registry:", address(invoker.REGISTRY()));
+        console.log("Sponsor:", address(invoker.SPONSOR()));
 
         // 7. Configure ClientSponsor (F1 fix: set invoker for access control)
         console.log("\n=== 7. Configure ClientSponsor ===");
@@ -109,12 +105,13 @@ contract DeployAll is Script {
         console.log("\n=== Deployment Summary ===");
         console.log("Network ID            : %s", block.chainid);
         console.log("PolicyRegistry (Proxy): %s", address(registry));
-        console.log("VolrInvoker (Proxy)   : %s", address(invoker));
+        console.log("VolrInvoker           : %s", address(invoker));
         console.log("ScopedPolicy (Impl)   : %s", address(policyImpl));
         console.log("ClientSponsor (Proxy) : %s", address(clientSponsor));
         console.log("VolrSponsor (Proxy)   : %s", address(volrSponsor));
         
         console.log("\n[Action Required] Update backend/DB with these addresses.");
-        console.log("[Note] VolrInvoker is now upgradeable via UUPS proxy.");
+        console.log("[Note] VolrInvoker is NOT a proxy - direct contract for EIP-7702.");
+        console.log("[Note] To upgrade VolrInvoker: deploy new contract, update backend invokerAddress.");
     }
 }

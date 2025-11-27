@@ -46,8 +46,6 @@ contract TokenReceiverIntegrationTest is Test {
         registry.register(policyId, address(policy), "test-policy");
         
         invoker = TestHelpers.deployVolrInvoker(owner, address(registry), address(mockSponsor));
-        invoker.setTimelock(owner);
-        invoker.setMultisig(owner);
         
         policy.setPolicy(policyId, block.chainid, type(uint256).max, type(uint64).max, true);
         (, , , policySnapshotHash, ) = policy.policies(policyId);

@@ -55,13 +55,13 @@ forge script script/DeployAll.s.sol \
 # Extract addresses from Deployment Summary section
 # Match patterns from actual log output:
 #   PolicyRegistry (Proxy): 0x...
-#   VolrInvoker (Proxy)   : 0x...
+#   VolrInvoker           : 0x... (NOT a proxy - direct contract for EIP-7702)
 #   ScopedPolicy (Impl)   : 0x...
 #   ClientSponsor (Proxy) : 0x...
 #   VolrSponsor (Proxy)   : 0x...
 
 POLICY_REGISTRY=$(grep "PolicyRegistry (Proxy):" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-VOLR_INVOKER=$(grep "VolrInvoker (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+VOLR_INVOKER=$(grep "VolrInvoker           :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 SCOPED_POLICY_IMPL=$(grep "ScopedPolicy (Impl)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 CLIENT_SPONSOR=$(grep "ClientSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 VOLR_SPONSOR=$(grep "VolrSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
@@ -71,7 +71,8 @@ if [ -z "$POLICY_REGISTRY" ]; then
     POLICY_REGISTRY=$(grep "Registry Proxy:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
 if [ -z "$VOLR_INVOKER" ]; then
-    VOLR_INVOKER=$(grep "VolrInvoker Proxy:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+    # VolrInvoker is NOT a proxy - direct contract deployment for EIP-7702
+    VOLR_INVOKER=$(grep "VolrInvoker:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
 if [ -z "$SCOPED_POLICY_IMPL" ]; then
     SCOPED_POLICY_IMPL=$(grep "ScopedPolicy Impl:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)

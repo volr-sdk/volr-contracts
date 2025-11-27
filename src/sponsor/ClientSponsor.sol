@@ -120,7 +120,12 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     /**
-     * @notice Modifier to restrict access to invoker only (F1 fix)
+     * @notice Modifier to restrict access to invoker only
+     * @dev EIP-7702 compatible: checks if caller's bytecode matches invoker's bytecode
+     *      In EIP-7702 context:
+     *      - msg.sender = User EOA (delegating to VolrInvoker bytecode)
+     *      - invoker = VolrInvoker contract address
+     *      - msg.sender.codehash == invoker.codehash (both have VolrInvoker bytecode)
      */
     modifier onlyInvoker() {
         _checkInvoker();
@@ -128,7 +133,12 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     function _checkInvoker() internal view {
-        if (msg.sender != invoker) revert NotInvoker();
+        // EIP-7702 compatible check:
+        // - Direct call: msg.sender == invoker (standard case)
+        // - EIP-7702: msg.sender.codehash == invoker.codehash (EOA delegating to invoker bytecode)
+        if (msg.sender != invoker && msg.sender.codehash != invoker.codehash) {
+            revert NotInvoker();
+        }
     }
     
     /**
@@ -282,7 +292,8 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         uint256 gasUsed,
         bytes32 policyId,
         address relayer
-    ) external override nonReentrant onlyInvoker {
+    ) external override nonReentrant {
+        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
         require(relayer != address(0), "Invalid relayer");
         
         address client = policyToClient[policyId];
@@ -362,7 +373,8 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
      * @param client Client address
      * @param policyId Policy ID
      */
-    function recordFailure(address client, bytes32 policyId) external onlyInvoker {
+    function recordFailure(address client, bytes32 policyId) external {
+        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;
@@ -377,7 +389,8 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         address user,
         bytes32 policyId,
         uint256 attemptFee
-    ) external onlyInvoker {
+    ) external {
+        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;

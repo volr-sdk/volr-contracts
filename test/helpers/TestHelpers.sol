@@ -52,25 +52,19 @@ library TestHelpers {
     }
     
     /**
-     * @notice Deploy and initialize VolrInvokerUpgradeable via proxy
-     * @param owner Owner address for upgrade authorization
-     * @param registry PolicyRegistry address
-     * @param sponsor Sponsor address
+     * @notice Deploy VolrInvoker (NO PROXY for EIP-7702)
+     * @dev EIP-7702: EOA delegates to contract bytecode directly, not through proxy
+     *      Proxy pattern doesn't work because EOA's storage is empty (no implementation slot)
+     * @param registry PolicyRegistry address (immutable)
+     * @param sponsor Sponsor address (immutable)
      */
     function deployVolrInvoker(
-        address owner,
+        address /* owner - unused, no admin functions */,
         address registry,
         address sponsor
     ) internal returns (VolrInvoker) {
-        VolrInvoker impl = new VolrInvoker();
-        bytes memory initData = abi.encodeWithSelector(
-            VolrInvoker.initialize.selector,
-            registry,
-            sponsor,
-            owner
-        );
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
-        return VolrInvoker(payable(address(proxy)));
+        // Direct deployment - no proxy
+        return new VolrInvoker(registry, sponsor);
     }
 }
 
