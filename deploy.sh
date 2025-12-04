@@ -1,26 +1,37 @@
 #!/bin/bash
-# Deploy all Volr contracts and update database
-# Usage: ./deploy.sh <CHAIN_ID> [--skip-db]
+# Deploy all Volr contracts
+# Usage: ./deploy.sh <CHAIN_ID> [--prod]
 # Example: ./deploy.sh 5115
+# Example: ./deploy.sh 5115 --prod
 
 set -e
 
 CHAIN_ID=$1
-SKIP_DB=false
-
-if [ "$2" == "--skip-db" ]; then
-    SKIP_DB=true
-fi
+ENV_FLAG=$2
 
 if [ -z "$CHAIN_ID" ]; then
-    echo "Usage: $0 <CHAIN_ID> [--skip-db]"
-    echo "Example: $0 5115"
+    echo "Usage: $0 <CHAIN_ID> [--prod]"
+    echo "Example: $0 5115        # Uses .env"
+    echo "Example: $0 5115 --prod # Uses .env.prod"
     exit 1
 fi
 
-# Load .env file from volr-contracts
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+# Determine which env file to use
+if [ "$ENV_FLAG" = "--prod" ]; then
+    ENV_FILE=".env.prod"
+    echo "🔴 PRODUCTION MODE"
+else
+    ENV_FILE=".env"
+    echo "🟢 Development mode"
+fi
+
+# Load env file
+if [ -f "$ENV_FILE" ]; then
+    export $(cat "$ENV_FILE" | grep -v '^#' | xargs)
+    echo "📁 Loaded: $ENV_FILE"
+else
+    echo "Error: $ENV_FILE not found"
+    exit 1
 fi
 
 # Get RPC URL
@@ -96,39 +107,21 @@ if [ -z "$POLICY_REGISTRY" ] || [ -z "$VOLR_INVOKER" ] || [ -z "$SCOPED_POLICY_I
     exit 1
 fi
 
-# Create deployment directory in backend if it doesn't exist
-mkdir -p ../volr-backend/prisma/deployment
-
-cat > "../volr-backend/prisma/deployment/deployment-addresses-${CHAIN_ID}.json" <<EOF
-{
-  "chainId": "${CHAIN_ID}",
-  "deployedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "addresses": {
-    "policyRegistry": "${POLICY_REGISTRY}",
-    "volrInvoker": "${VOLR_INVOKER}",
-    "scopedPolicyImpl": "${SCOPED_POLICY_IMPL}",
-    "clientSponsor": "${CLIENT_SPONSOR}",
-    "volrSponsor": "${VOLR_SPONSOR}"
-  }
-}
-EOF
-
 rm "$TEMP_OUTPUT"
 
 echo ""
-echo "✅ Deployment completed!"
-echo "   PolicyRegistry   : ${POLICY_REGISTRY}"
-echo "   VolrInvoker      : ${VOLR_INVOKER}"
-echo "   ScopedPolicy Impl: ${SCOPED_POLICY_IMPL}"
-echo "   ClientSponsor   : ${CLIENT_SPONSOR}"
-echo "   VolrSponsor     : ${VOLR_SPONSOR}"
-
-cd ..
-
+echo "═══════════════════════════════════════════════════════════════"
+echo "✅ Deployment completed! (Chain ID: ${CHAIN_ID})"
+echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "📝 Next steps:"
-echo "   1. Upsert chain in backend DB:"
-echo "      cd volr-backend && yarn upsert-chain dev ${CHAIN_ID}"
-echo "      (or: yarn upsert-chain local ${CHAIN_ID} / yarn upsert-chain prod ${CHAIN_ID})"
-echo "   2. Restart backend server"
-
+echo "Contract Addresses:"
+echo "  Invoker Address          : ${VOLR_INVOKER}"
+echo "  Policy Registry Address  : ${POLICY_REGISTRY}"
+echo "  Client Sponsor Address   : ${CLIENT_SPONSOR}"
+echo "  Volr Sponsor Address     : ${VOLR_SPONSOR}"
+echo "  Scoped Policy Impl       : ${SCOPED_POLICY_IMPL}"
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "📝 Next step: Register this network in Volr Dashboard"
+echo "   Admin > Manage Networks > Add Network"
+echo "═══════════════════════════════════════════════════════════════"

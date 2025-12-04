@@ -1,21 +1,37 @@
 #!/bin/bash
 # Upgrade ClientSponsor contract
-# Usage: ./upgrade.sh <CHAIN_ID>
+# Usage: ./upgrade.sh <CHAIN_ID> [--prod]
 # Example: ./upgrade.sh 5115
+# Example: ./upgrade.sh 5115 --prod
 
 set -e
 
 CHAIN_ID=$1
+ENV_FLAG=$2
 
 if [ -z "$CHAIN_ID" ]; then
-    echo "Usage: $0 <CHAIN_ID>"
-    echo "Example: $0 5115"
+    echo "Usage: $0 <CHAIN_ID> [--prod]"
+    echo "Example: $0 5115        # Uses .env"
+    echo "Example: $0 5115 --prod # Uses .env.prod"
     exit 1
 fi
 
-# Load .env file from volr-contracts
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+# Determine which env file to use
+if [ "$ENV_FLAG" = "--prod" ]; then
+    ENV_FILE=".env.prod"
+    echo "🔴 PRODUCTION MODE"
+else
+    ENV_FILE=".env"
+    echo "🟢 Development mode"
+fi
+
+# Load env file
+if [ -f "$ENV_FILE" ]; then
+    export $(cat "$ENV_FILE" | grep -v '^#' | xargs)
+    echo "📁 Loaded: $ENV_FILE"
+else
+    echo "Error: $ENV_FILE not found"
+    exit 1
 fi
 
 # Get RPC URL
