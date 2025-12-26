@@ -133,12 +133,28 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
     }
     
     function _checkInvoker() internal view {
+        // Direct call: msg.sender == invoker (standard case)
+        if (msg.sender == invoker) return;
+        
         // EIP-7702 compatible check:
-        // - Direct call: msg.sender == invoker (standard case)
-        // - EIP-7702: msg.sender.codehash == invoker.codehash (EOA delegating to invoker bytecode)
-        if (msg.sender != invoker && msg.sender.codehash != invoker.codehash) {
-            revert NotInvoker();
+        // Delegation designator format: 0xef0100<20-byte address>
+        // When EOA delegates to invoker, its code becomes 0xef0100<invoker_address>
+        bytes memory code = msg.sender.code;
+        if (code.length == 23) {
+            // Check magic bytes: 0xef0100
+            if (code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00) {
+                // Extract delegated address from bytes 3-22
+                address delegatedTo;
+                assembly {
+                    // Load 32 bytes starting from position 23 (after length prefix + 3 magic bytes)
+                    // Then shift right by 96 bits (12 bytes) to get the 20-byte address
+                    delegatedTo := shr(96, mload(add(code, 35)))
+                }
+                if (delegatedTo == invoker) return;
+            }
         }
+        
+        revert NotInvoker();
     }
     
     /**
@@ -292,8 +308,7 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         uint256 gasUsed,
         bytes32 policyId,
         address relayer
-    ) external override nonReentrant {
-        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
+    ) external override nonReentrant onlyInvoker {
         require(relayer != address(0), "Invalid relayer");
         
         address client = policyToClient[policyId];
@@ -373,8 +388,7 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
      * @param client Client address
      * @param policyId Policy ID
      */
-    function recordFailure(address client, bytes32 policyId) external {
-        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
+    function recordFailure(address client, bytes32 policyId) external nonReentrant onlyInvoker {
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;
@@ -389,8 +403,7 @@ contract ClientSponsor is ISponsor, ReentrancyGuard, Initializable, UUPSUpgradea
         address user,
         bytes32 policyId,
         uint256 attemptFee
-    ) external {
-        // TODO: onlyInvoker 제거됨 - 7702 환경 테스트용. 메인넷 전 재검토 필요
+    ) external nonReentrant onlyInvoker {
         FailureCounter storage counter = failureCounters[client][policyId];
         counter.consecutiveFailures++;
         counter.windowFailures++;

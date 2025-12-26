@@ -1,8 +1,21 @@
 #!/bin/bash
 # Deploy all Volr contracts
 # Usage: ./deploy.sh <CHAIN_ID> [--prod]
-# Example: ./deploy.sh 5115
-# Example: ./deploy.sh 5115 --prod
+# Example: ./deploy.sh 5115        # Uses .env (development/testnet)
+# Example: ./deploy.sh 5115 --prod # Uses .env.prod (production/mainnet)
+#
+# Environment files:
+#   - .env: Development/testnet deployment (default)
+#   - .env.prod: Production/mainnet deployment
+#
+# Required env variables:
+#   - PRIVATE_KEY: Deployer's private key (without 0x prefix)
+#   - RPC_URL_<CHAIN_ID>: RPC URL for the target chain
+#
+# Optional env variables:
+#   - PAYMENT_ROUTER_FEE_RECIPIENT: Address to receive fees (defaults to deployer)
+#   - PAYMENT_ROUTER_OWNER: Contract owner address (defaults to deployer)
+#   - RELAYER_ADDRESS: Relayer address to register in PolicyRegistry
 
 set -e
 
@@ -61,6 +74,7 @@ TEMP_OUTPUT=$(mktemp)
 forge script script/DeployAll.s.sol \
     --rpc-url "$RPC_URL" \
     --broadcast \
+    --slow \
     -vvv 2>&1 | tee "$TEMP_OUTPUT"
 
 # Extract addresses from Deployment Summary section
@@ -76,6 +90,7 @@ VOLR_INVOKER=$(grep "VolrInvoker           :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA
 SCOPED_POLICY_IMPL=$(grep "ScopedPolicy (Impl)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 CLIENT_SPONSOR=$(grep "ClientSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 VOLR_SPONSOR=$(grep "VolrSponsor (Proxy)" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+PAYMENT_ROUTER=$(grep "PaymentRouter         :" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 
 # Fallback to individual log lines (from === sections)
 if [ -z "$POLICY_REGISTRY" ]; then
@@ -94,10 +109,13 @@ fi
 if [ -z "$VOLR_SPONSOR" ]; then
     VOLR_SPONSOR=$(grep "VolrSponsor Proxy:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
+if [ -z "$PAYMENT_ROUTER" ]; then
+    PAYMENT_ROUTER=$(grep "PaymentRouter:" "$TEMP_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+fi
 
 if [ -z "$POLICY_REGISTRY" ] || [ -z "$VOLR_INVOKER" ] || [ -z "$SCOPED_POLICY_IMPL" ] || [ -z "$CLIENT_SPONSOR" ] || [ -z "$VOLR_SPONSOR" ]; then
     echo ""
-    echo "⚠️  Warning: Some addresses could not be extracted."
+    echo "⚠️  Warning: Some required addresses could not be extracted."
     echo "   POLICY_REGISTRY: ${POLICY_REGISTRY:-NOT_FOUND}"
     echo "   VOLR_INVOKER: ${VOLR_INVOKER:-NOT_FOUND}"
     echo "   SCOPED_POLICY_IMPL: ${SCOPED_POLICY_IMPL:-NOT_FOUND}"
@@ -105,6 +123,12 @@ if [ -z "$POLICY_REGISTRY" ] || [ -z "$VOLR_INVOKER" ] || [ -z "$SCOPED_POLICY_I
     echo "   VOLR_SPONSOR: ${VOLR_SPONSOR:-NOT_FOUND}"
     rm "$TEMP_OUTPUT"
     exit 1
+fi
+
+# PaymentRouter is optional, so we only warn if it's missing
+if [ -z "$PAYMENT_ROUTER" ]; then
+    echo ""
+    echo "⚠️  Note: PaymentRouter address could not be extracted (this is optional)."
 fi
 
 rm "$TEMP_OUTPUT"
@@ -120,6 +144,9 @@ echo "  Policy Registry Address  : ${POLICY_REGISTRY}"
 echo "  Client Sponsor Address   : ${CLIENT_SPONSOR}"
 echo "  Volr Sponsor Address     : ${VOLR_SPONSOR}"
 echo "  Scoped Policy Impl       : ${SCOPED_POLICY_IMPL}"
+if [ -n "$PAYMENT_ROUTER" ]; then
+    echo "  PaymentRouter Address    : ${PAYMENT_ROUTER}"
+fi
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "📝 Next step: Register this network in Volr Dashboard"

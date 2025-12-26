@@ -7,6 +7,7 @@ import {PolicyRegistry} from "../src/registry/PolicyRegistry.sol";
 import {ScopedPolicy} from "../src/policy/ScopedPolicy.sol";
 import {ClientSponsor} from "../src/sponsor/ClientSponsor.sol";
 import {VolrSponsor} from "../src/sponsor/VolrSponsor.sol";
+import {PaymentRouter} from "../src/payment/PaymentRouter.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /**
@@ -88,8 +89,30 @@ contract DeployAll is Script {
         volrSponsor.setAuthorizedCaller(address(clientSponsor), true);
         console.log("VolrSponsor authorized caller:", address(clientSponsor));
 
-        // 9. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
-        console.log("\n=== 9. Register Relayer ===");
+        // 9. PaymentRouter (for EIP-2612 permit payments)
+        console.log("\n=== 9. PaymentRouter ===");
+        // Fee recipient: address that receives fees from payments (should be Volr's operational wallet)
+        address feeRecipient = vm.envOr("PAYMENT_ROUTER_FEE_RECIPIENT", address(0));
+        // Owner: address that can call setFeeRecipient (should be multisig or separate admin address)
+        address routerOwner = vm.envOr("PAYMENT_ROUTER_OWNER", address(0));
+        
+        // If not set, use deployer as default (for testing convenience)
+        if (feeRecipient == address(0)) {
+            feeRecipient = deployer;
+            console.log("WARNING: Using deployer as feeRecipient (PAYMENT_ROUTER_FEE_RECIPIENT not set)");
+        }
+        if (routerOwner == address(0)) {
+            routerOwner = deployer;
+            console.log("WARNING: Using deployer as owner (PAYMENT_ROUTER_OWNER not set)");
+        }
+        
+        PaymentRouter paymentRouter = new PaymentRouter(feeRecipient, routerOwner);
+        console.log("PaymentRouter:", address(paymentRouter));
+        console.log("Fee Recipient:", paymentRouter.feeRecipient());
+        console.log("Owner:", paymentRouter.owner());
+
+        // 10. Register Relayer in PolicyRegistry (if RELAYER_ADDRESS is set)
+        console.log("\n=== 10. Register Relayer ===");
         address relayerAddr = vm.envOr("RELAYER_ADDRESS", address(0));
         bool hasRelayer = relayerAddr != address(0);
         if (hasRelayer) {
@@ -109,9 +132,11 @@ contract DeployAll is Script {
         console.log("ScopedPolicy (Impl)   : %s", address(policyImpl));
         console.log("ClientSponsor (Proxy) : %s", address(clientSponsor));
         console.log("VolrSponsor (Proxy)   : %s", address(volrSponsor));
+        console.log("PaymentRouter         : %s", address(paymentRouter));
         
         console.log("\n[Action Required] Update backend/DB with these addresses.");
         console.log("[Note] VolrInvoker is NOT a proxy - direct contract for EIP-7702.");
         console.log("[Note] To upgrade VolrInvoker: deploy new contract, update backend invokerAddress.");
+        console.log("[Note] PaymentRouter is optional - only needed for external wallet permit payments.");
     }
 }
